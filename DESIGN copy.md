@@ -65,9 +65,9 @@ AI Agent ←─ MCP/API ──→ xpuDaemon (语义层)
 ┌─────────────────────────────────────────────────────────────────┐
 │                   CLI 模块层 (独立可执行文件)                     │
 │                                                                  │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
-│  │ xpuLoad  │→│ xpuIn2Wav│→│xpuFingerp│→│xpuClassi│→│xpuProcess│→│xpuOutWave│→│ xpuPlay  │ │
-│  │ (解析)   │ │ (转WAV)  │ │ (指纹)   │ │ (分类)   │ │ (DSP)    │ │ (输出)   │ │ (播放)   │ │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
+│  │ xpuLoad  │→│ xpuIn2Wav│→│xpuFingerp│→│xpuClassi│→│xpuVisual│→│xpuProcess│→│xpuOutWave│→│ xpuPlay  │ │
+│  │ (解析)   │ │ (转WAV)  │ │ (指纹)   │ │ (分类)   │ │ (可视化) │ │ (DSP)    │ │ (输出)   │ │ (播放)   │ │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐                         │
 │  │ xpuQueue │ │ xpuMeta  │ │ xpuCache │                         │
@@ -165,11 +165,11 @@ xpuLoad song.flac --format binary | xpuIn2Wav
 # FLAC, WAV, ALAC, DSD (DSF/DSD)
 ```
 
-#### 3.2.2 xpuIn2Wav (统一转换为 WAV)
+#### 3.2.2 xpuIn2Wav (统一转换为 WAV + FFT 缓存)
 
-**核心功能：将无损音频文件转换为标准 WAV 格式**
+**核心功能：将无损音频文件转换为标准 WAV 格式，并计算 FFT 频谱数据缓存到本地**
 
-这是音频管道的"统一化"模块，确保后续所有模块只需处理 WAV 一种格式。只支持无损格式：FLAC、WAV、ALAC、DSD。
+这是音频管道的"统一化"模块，确保后续所有模块只需处理 WAV 一种格式。同时计算 FFT 数据并缓存，避免后续模块重复计算。只支持无损格式：FLAC、WAV、ALAC、DSD。
 
 ```bash
 # 基本用法（使用配置文件中的参数）
@@ -184,11 +184,24 @@ xpuIn2Wav --high-quality
 # 快速模式（较低质量）
 xpuIn2Wav --fast
 
+# FFT 缓存选项
+xpuIn2Wav --fft-cache                # 启用 FFT 缓存（默认）
+xpuIn2Wav --no-fft-cache             # 禁用 FFT 缓存
+xpuIn2Wav --fft-cache-dir ~/.cache/xpu/fft  # 指定缓存目录
+
+# FFT 参数
+xpuIn2Wav --fft-size 2048            # FFT 窗口大小（1024/2048/4096/8192）
+xpuIn2Wav --fft-hop 1024              # FFT 跳跃大小（默认 fft-size/2）
+xpuIn2Wav --fft-window hann          # 窗函数（hann/hamming/blackman）
+
 # 输入 (stdin)
 # 来自 xpuLoad 的二进制格式
 
 # 输出 (stdout)
 # 标准 WAV 格式 PCM 数据（44字节头部 + 数据）
+
+# 输出 (stderr)
+# FFT 缓存信息 JSON
 ```
 
 **工作流程：**
@@ -217,11 +230,72 @@ xpuIn2Wav --fast
 │     ├── 转换到目标位深                                     │
 │     └── 转换声道数                                          │
 │                                                             │
-│  5. 输出标准 WAV 格式                                        │
+│  5. 计算 FFT 频谱数据                                       │
+│     ├── 分帧处理（重叠窗口）                                 │
+│     ├── 应用窗函数                                          │
+│     ├── FFT 变换                                            │
+│     ├── 计算幅度谱和相位谱                                   │
+│     └── 缓存到磁盘                                           │
+│                                                             │
+│  6. 输出标准 WAV 格式                                        │
 │     ├── 44字节 WAV 头部                                     │
-│     └── PCM 音频数据                                        │
+│     └── PCM 音频数据 → stdout                               │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
+```
+
+**FFT 缓存输出格式：**
+
+```json
+{
+  "cache_id": "a1b2c3d4e5f6",
+  "cache_path": "/home/user/.cache/xpu/fft/a1b2c3d4e5f6",
+  "audio_info": {
+    "duration": 245.8,
+    "sample_rate": 96000,
+    "channels": 2,
+    "bit_depth": 32
+  },
+  "fft_info": {
+    "fft_size": 2048,
+    "hop_size": 1024,
+    "window_function": "hann",
+    "num_frames": 22988,
+    "freq_bins": 1025,
+    "freq_resolution": 46.875
+  },
+  "files": {
+    "magnitude": "magnitude.bin",      # 幅度谱（二进制浮点数组）
+    "phase": "phase.bin",               # 相位谱（二进制浮点数组）
+    "meta": "meta.json"                 # FFT 元数据
+  }
+}
+```
+
+**FFT 缓存结构：**
+
+```
+~/.cache/xpu/fft/<cache_id>/
+├── meta.json             # 元数据
+├── magnitude.bin         # 幅度谱 [frames × freq_bins]
+├── phase.bin             # 相位谱 [frames × freq_bins]
+└── config.json           # FFT 配置参数
+```
+
+**数据格式：**
+
+```
+magnitude.bin 和 phase.bin 格式：
+- 二进制 float32 数组
+- 维度：[num_frames × freq_bins × channels]
+- 行优先存储（C 顺序）
+- 大小计算：num_frames × freq_bins × channels × 4 字节
+
+示例（96kHz, 2048 FFT, 50% overlap）：
+- 245.8 秒音频 → 22988 帧
+- 2048 FFT → 1025 频率箱
+- 2 声道
+- 总大小：22988 × 1025 × 2 × 4 = 188 MB
 ```
 
 **支持的无损格式：**
@@ -262,22 +336,29 @@ channels = 2                   # xpuIn2Wav 使用的声道数
 
 resample_quality = "high"      # high/medium/fast
 dither = true                  # 24-bit 以下启用抖动
+
+[fft_cache]
+enabled = true                 # 默认启用 FFT 缓存
+cache_dir = "~/.cache/xpu/fft"
+fft_size = 2048                # FFT 窗口大小
+hop_size = 1024                 # 跳跃大小（默认 fft_size/2）
+window = "hann"                 # 窗函数
 ```
 
 **设计理念：**
 
 ```
-输入格式多样性                统一的 WAV 格式
+输入格式多样性                统一的 WAV 格式 + FFT 缓存
 ┌──────────────┐              ┌──────────────┐
 │   FLAC      │              │              │
 │   WAV       │    ┌─────┐    │              │
 │   ALAC      │───→│  WAV │───→│   xpuProcess │
 │   DSD       │    └─────┘    │  (标准化)    │
-│  (DSF/DSD)  │              │              │
-└──────────────┘              └──────────────┘
-                                  │
-                            ↓ xpuIn2Wav 的核心价值
-                        "让后续模块只处理 WAV"
+│  (DSF/DSD)  │        ↓       │              │
+└──────────────┘    ┌─────┐    └──────────────┘
+                    │ FFT │          ↓
+                    │缓存│    后续模块可复用
+                    └─────┘    FFT 数据
 ```
 
 **为什么这样设计：**
@@ -286,6 +367,9 @@ dither = true                  # 24-bit 以下启用抖动
 2. **保证音质**：统一的无损高质量转换起点
 3. **易于缓存**：WAV 格式便于缓存和重用
 4. **符合 WAV 规范**：标准格式，兼容性好
+5. **FFT 预计算**：一次计算，多次复用，避免重复 FFT 变换
+6. **性能优化**：频域操作直接使用缓存，速度快 10-100 倍
+7. **可选设计**：可以禁用 FFT 缓存，保持向后兼容
 
 #### 3.2.3 xpuFingerprint (音频指纹)
 
@@ -297,6 +381,12 @@ xpuFingerprint [选项]
 
 # 生成指纹（输出到 stdout）
 xpuFingerprint
+
+# 从 FFT 缓存读取（推荐，更快）
+xpuFingerprint --fft-cache a1b2c3d4e5f6
+
+# 从 WAV 读取（传统方式）
+xpuFingerprint --from-wav
 
 # 指定算法
 xpuFingerprint --algorithm chromaprint   # Chromaprint/Acoustid (默认)
@@ -312,7 +402,7 @@ xpuFingerprint --format base64          # Base64 编码
 xpuFingerprint --duration 120           # 分析前 120 秒
 
 # 输入 (stdin)
-# WAV 格式 PCM 数据
+# WAV 格式 PCM 数据 或 FFT 缓存 ID
 
 # 输出 (stdout)
 # 音频指纹 JSON
@@ -369,7 +459,59 @@ xpuFingerprint --algorithm chromaprint | \
 
 # 音乐分析
 xpuFingerprint --algorithm acousticbrainz
+
+# 从 FFT 缓存生成（更快）
+xpuFingerprint --fft-cache a1b2c3d4e5f6
+
+# 完整管道（使用 FFT 缓存）
+CACHE_ID=$(xpuLoad song.flac | xpuIn2Wav 2>&1 | jq -r '.cache_id')
+xpuFingerprint --fft-cache $CACHE_ID
+xpuClassify --fft-cache $CACHE_ID
 ```
+
+**设计理念：**
+
+```
+┌──────────────┐     ┌──────────────┐
+│   音频数据   │ ──→ │  xpuFingerprint │
+│   (WAV)      │     │  (特征提取)   │
+└──────────────┘     └──────────────┘
+                            │
+                    ┌───────┴────────┐
+                    │                │
+                ↓ 指纹           ↓ 音乐特征
+            唯一标识符        BPM/调性/情绪
+```
+
+**为什么这样设计：**
+
+1. **唯一标识**：每首音乐都有独特的指纹
+2. **快速匹配**：指纹比较比音频比较快100倍
+3. **特征提取**：为后续分类提供数据基础
+4. **离线优先**：支持本地指纹数据库
+5. **FFT 缓存支持**：可从缓存直接读取频谱数据，避免重复计算
+
+#### 3.2.4 xpuClassify (音乐分类)
+
+根据音频指纹和特征对音乐进行智能分类。
+
+```bash
+# 基本用法
+xpuClassify [选项]
+
+# 自动分类
+xpuClassify
+
+# 从 FFT 缓存读取（推荐，更快）
+xpuClassify --fft-cache a1b2c3d4e5f6
+
+# 从 WAV 读取（传统方式）
+xpuClassify --from-wav
+
+# 指定分类维度
+xpuClassify --dimension genre        # 流派分类
+xpuClassify --dimension mood         # 情绪分类
+xpuClassify --dimension activity     # 活动分类
 
 **设计理念：**
 
@@ -502,9 +644,17 @@ xpuIn2Wav | xpuFingerprint | xpuClassify --dimension all
 # 只分类流派
 xpuIn2Wav | xpuFingerprint | xpuClassify --dimension genre
 
+# 从 FFT 缓存分类（更快）
+xpuClassify --fft-cache a1b2c3d4e5f6 --dimension all
+
 # 基于分类自动创建播放列表
 xpuIn2Wav | xpuFingerprint | xpuClassify | \
     xpuPlaylist --auto-organize
+
+# 完整管道（使用 FFT 缓存）
+CACHE_ID=$(xpuLoad song.flac | xpuIn2Wav 2>&1 | jq -r '.cache_id')
+xpuFingerprint --fft-cache $CACHE_ID
+xpuClassify --fft-cache $CACHE_ID --dimension all
 ```
 
 **设计理念：**
@@ -527,25 +677,347 @@ xpuIn2Wav | xpuFingerprint | xpuClassify | \
 2. **置信度评分**：知道分类的可靠性
 3. **规则+ML**：结合规则引擎和机器学习
 4. **可扩展**：可以添加新的分类维度和规则
+5. **FFT 缓存支持**：从缓存直接读取频域特征，避免重复 FFT 计算
 
-#### 3.2.5 xpuProcess (DSP 处理器)
+#### 3.2.5 xpuVisualize (音频可视化)
 
-数字信号处理模块，对音频进行实时效果处理。
+生成音频的时间域和频率域可视化数据，缓存到本地，支持按需读取和降采样。
+
+**注意：xpuVisualize 可以复用 xpuIn2Wav 生成的 FFT 缓存数据。**
+
+```bash
+# 基本用法（生成完整可视化数据）
+xpuVisualize
+
+# 复用 FFT 缓存（推荐，更快）
+xpuVisualize --fft-cache a1b2c3d4e5f6
+
+# 从 WAV 生成（传统方式）
+xpuVisualize --from-wav
+
+# 指定缓存目录
+xpuVisualize --cache-dir ~/.cache/xpu/visualize
+
+# 输出格式
+xpuVisualize --format json           # JSON 格式 (默认)
+xpuVisualize --format binary         # 二进制格式（更紧凑）
+xpuVisualize --format msgpack        # MessagePack 格式
+
+# 时间域分辨率
+xpuVisualize --time-resolution 100   # 每秒 100 个采样点
+xpuVisualize --time-resolution 50    # 每秒 50 个采样点（更低精度）
+
+# 频率域分辨率（复用 FFT 缓存时自动匹配）
+xpuVisualize --fft-size 2048         # FFT 窗口大小
+xpuVisualize --freq-bands 64         # 频率带数量
+
+# 频率范围
+xpuVisualize --freq-min 20           # 最低频率 20Hz
+xpuVisualize --freq-max 20000        # 最高频率 20kHz
+
+# 只生成特定类型的数据
+xpuVisualize --type waveform         # 只生成波形数据
+xpuVisualize --type spectrum         # 只生成频谱数据
+xpuVisualize --type all              # 生成所有数据（默认）
+
+# 降采样模式（用于快速预览）
+xpuVisualize --downsample 4          # 4倍降采样
+xpuVisualize --overview              # 生成概览模式（极低分辨率）
+
+# 输入 (stdin)
+# WAV 格式 PCM 数据
+
+# 输出 (stdout)
+# 可视化数据缓存信息 JSON
+```
+
+**输出格式：**
+
+```json
+{
+  "success": true,
+  "cache_id": "a1b2c3d4e5f6",
+  "cache_path": "/home/user/.cache/xpu/visualize/a1b2c3d4e5f6",
+  "duration": 245.8,
+  "sample_rate": 96000,
+  "channels": 2,
+  "data_types": {
+    "waveform": {
+      "path": "waveform.bin",
+      "size": 24580,
+      "resolution": 100,
+      "points_per_second": 100
+    },
+    "spectrum": {
+      "path": "spectrum.bin",
+      "size": 1573120,
+      "fft_size": 2048,
+      "freq_bands": 64,
+      "frames_per_second": 50
+    }
+  },
+  "metadata": {
+    "created_at": "2026-01-07T12:34:56Z",
+    "format_version": "1.0"
+  }
+}
+```
+
+**时间域数据（波形）：**
+
+```json
+{
+  "type": "waveform",
+  "sample_rate": 100,
+  "channels": 2,
+  "duration": 245.8,
+  "points": 24580,
+  "data": [
+    {"time": 0.0, "left": -0.2, "right": -0.18},
+    {"time": 0.01, "left": -0.15, "right": -0.12},
+    ...
+  ]
+}
+```
+
+**频率域数据（频谱）：**
+
+```json
+{
+  "type": "spectrum",
+  "fft_size": 2048,
+  "freq_bands": 64,
+  "freq_min": 20,
+  "freq_max": 20000,
+  "frames_per_second": 50,
+  "total_frames": 12290,
+  "data": [
+    {
+      "time": 0.0,
+      "bands": [
+        {"freq": 20, "magnitude": 0.1},
+        {"freq": 50, "magnitude": 0.15},
+        {"freq": 100, "magnitude": 0.2},
+        ...
+      ]
+    },
+    ...
+  ]
+}
+```
+
+**缓存结构：**
+
+```
+~/.cache/xpu/visualize/<cache_id>/
+├── meta.json              # 元数据
+├── waveform.bin           # 波形数据（二进制）
+├── spectrum.bin           # 频谱数据（二进制）
+├── overview.bin           # 概览数据（极低分辨率）
+└── thumbnail.png          # 缩略图（可选）
+```
+
+**读取缓存数据：**
+
+```bash
+# 读取完整波形数据
+xpuVisualize --read a1b2c3d4e5f6 --type waveform
+
+# 读取部分波形数据（10-20秒）
+xpuVisualize --read a1b2c3d4e5f6 --type waveform --start 10 --end 20
+
+# 读取降采样数据（降低解析度）
+xpuVisualize --read a1b2c3d4e5f6 --type waveform --downsample 10
+
+# 读取概览数据（极低分辨率，快速加载）
+xpuVisualize --read a1b2c3d4e5f6 --overview
+
+# 读取频谱数据
+xpuVisualize --read a1b2c3d4e5f6 --type spectrum
+
+# 读取特定时间段的频谱
+xpuVisualize --read a1b2c3d4e5f6 --type spectrum --start 30 --end 60
+
+# 输出为 JSON
+xpuVisualize --read a1b2c3d4e5f6 --output json
+
+# 输出为二进制（更快）
+xpuVisualize --read a1b2c3d4e5f6 --output binary
+
+# 输出为图像（PNG）
+xpuVisualize --read a1b2c3d4e5f6 --output image --width 1920 --height 1080
+```
+
+**数据格式对比：**
+
+| 格式 | 大小 | 读取速度 | 适用场景 |
+|------|------|---------|---------|
+| 完整数据 | 100% | 慢 | 精细分析 |
+| 降采样 2x | 50% | 中等 | 一般预览 |
+| 降采样 10x | 10% | 快 | 快速浏览 |
+| 概览模式 | 1% | 极快 | 缩略图 |
+
+**降采样示例：**
+
+```bash
+# 生成完整数据
+xpuLoad song.flac | xpuIn2Wav | xpuVisualize
+# 输出：24580 个波形点，每秒 100 点
+
+# 读取 10 倍降采样数据
+xpuVisualize --read a1b2c3d4e5f6 --downsample 10
+# 输出：2458 个波形点，每秒 10 点
+
+# 读取 100 倍降采样数据
+xpuVisualize --read a1b2c3d4e5f6 --downsample 100
+# 输出：246 个波形点，每秒 1 点
+
+# 读取概览模式
+xpuVisualize --read a1b2c3d4e5f6 --overview
+# 输出：25 个波形点，每首歌曲 25 点
+```
+
+**可视化类型：**
+
+```bash
+# 波形图（Waveform）
+xpuVisualize --type waveform
+
+# 频谱图（Spectrum）
+xpuVisualize --type spectrum
+
+# 频谱图（Spectrogram）- 时间-频率热图
+xpuVisualize --type spectrogram
+
+# 音量包络（Envelope）
+xpuVisualize --type envelope
+
+# 立体声声场（Stereo Field）
+xpuVisualize --type stereo
+
+# 所有类型
+xpuVisualize --type all
+```
+
+**缓存管理：**
+
+```bash
+# 列出所有缓存
+xpuVisualize --cache-list
+
+# 删除特定缓存
+xpuVisualize --cache-delete a1b2c3d4e5f6
+
+# 清空所有缓存
+xpuVisualize --cache-clear
+
+# 缓存统计
+xpuVisualize --cache-stats
+# 输出：
+{
+  "total_caches": 125,
+  "total_size": 2147483648,
+  "oldest_cache": "2025-12-01",
+  "newest_cache": "2026-01-07"
+}
+```
+
+**设计理念：**
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                 xpuVisualize 处理流程                     │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  WAV 数据输入                                            │
+│      ↓                                                   │
+│  ┌─────────────────────────────────────┐                │
+│  │   时间域分析（波形）                │                │
+│  │   • 采样：100-1000 点/秒           │                │
+│  │   • 输出：时间-幅度序列             │                │
+│  └─────────────────────────────────────┘                │
+│      ↓                                                   │
+│  ┌─────────────────────────────────────┐                │
+│  │   频率域分析（频谱）                │                │
+│  │   • FFT 窗口：2048/4096            │                │
+│  │   • 频率带：32-128                 │                │
+│  │   • 输出：时间-频率-幅度 3D 数据   │                │
+│  └─────────────────────────────────────┘                │
+│      ↓                                                   │
+│  ┌─────────────────────────────────────┐                │
+│  │   缓存到磁盘                        │                │
+│  │   • 元数据：JSON                    │                │
+│  │   • 波形数据：二进制               │                │
+│  │   • 频谱数据：二进制               │                │
+│  └─────────────────────────────────────┘                │
+│      ↓                                                   │
+│  ┌─────────────────────────────────────┐                │
+│  │   按需读取                          │                │
+│  │   • 完整数据 / 降采样               │                │
+│  │   • 时间范围筛选                    │                │
+│  │   • 数据类型筛选                    │                │
+│  └─────────────────────────────────────┘                │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+**为什么这样设计：**
+
+1. **分离关注点**：可视化不影响音频播放流程
+2. **缓存优先**：避免重复计算，提高响应速度
+3. **按需读取**：支持读取部分数据和降采样，适应不同场景
+4. **多分辨率**：概览、预览、完整数据三级精度
+5. **磁盘缓存**：大型数据持久化，节省内存
+
+**典型用法：**
+
+```bash
+# 生成可视化数据（完整管道）
+xpuLoad song.flac | xpuIn2Wav | xpuFingerprint | xpuClassify | \
+    xpuVisualize --cache-dir ~/.cache/xpu/visualize | \
+    xpuProcess | xpuOutWave | xpuPlay
+
+# 复用 FFT 缓存（更快）
+xpuVisualize --fft-cache a1b2c3d4e5f6
+
+# 后台生成可视化（不阻塞播放）
+xpuLoad song.flac | xpuIn2Wav | xpuVisualize &
+
+# 读取波形数据用于 UI 显示
+xpuVisualize --read a1b2c3d4e5f6 --type waveform --downsample 10
+
+# 读取频谱数据用于实时可视化
+xpuVisualize --read a1b2c3d4e5f6 --type spectrum --start 0 --end 5
+
+# 生成缩略图
+xpuVisualize --read a1b2c3d4e5f6 --overview --output image \
+    --width 400 --height 100 > thumbnail.png
+```
+
+#### 3.2.6 xpuProcess (DSP 处理器)
+
+数字信号处理模块，对音频进行实时效果处理。支持从 WAV 或 FFT 缓存读取数据。
 
 ```bash
 # 基本用法
 xpuProcess [选项]
 
-# 音量控制
+# 从 WAV 读取（传统方式）
+xpuProcess --from-wav
+
+# 从 FFT 缓存读取（推荐，频域操作更快）
+xpuProcess --fft-cache a1b2c3d4e5f6
+
+# 音量控制（时域）
 xpuProcess --volume 0.8           # 设置音量 0.0-1.0
 xpuProcess --volume +10           # 增加 10dB
 xpuProcess --volume -5            # 减少 5dB
 
-# 淡入淡出
+# 淡入淡出（时域）
 xpuProcess --fade-in 2000         # 2秒淡入
 xpuProcess --fade-out 3000        # 3秒淡出
 
-# 均衡器
+# 均衡器（频域，使用 FFT 缓存更快）
 xpuProcess --eq preset=rock       # 预设均衡器
 xpuProcess --eq custom:60=+3,250=-2,1000=0,4000=+2,16000=+4
 xpuProcess --eq flat              # 平坦响应
@@ -598,18 +1070,27 @@ xpuProcess --eq list-presets
 # 组合多个效果
 xpuIn2Wav | xpuProcess --volume 0.8 --eq rock --compress 2:1 | xpuPlay
 
+# 从 FFT 缓存应用频域处理（更快）
+xpuProcess --fft-cache a1b2c3d4e5f6 --eq rock
+
 # 跨文件渐变
 xpuProcess song1.wav --fade-out 2000 > out1.wav
 xpuProcess song2.wav --fade-in 2000 > out2.wav
 ```
 
-#### 3.2.6 xpuOutWave (输出转换器)
+#### 3.2.7 xpuOutWave (输出转换器)
 
-将音频转换为输出设备最佳格式的最终转换器。只支持无损格式输出。
+将音频转换为输出设备最佳格式的最终转换器。只支持无损格式输出，输出保持为 WAV。
 
 ```bash
 # 基本用法
 xpuOutWave [选项]
+
+# 从 WAV 读取（传统方式）
+xpuOutWave --from-wav
+
+# 从 FFT 缓存读取（用于格式转换时更高效）
+xpuOutWave --fft-cache a1b2c3d4e5f6
 
 # 自动检测设备最佳格式
 xpuOutWave --auto
@@ -617,7 +1098,7 @@ xpuOutWave --auto
 # 指定输出采样率和位深
 xpuOutWave --rate 192000 --depth 32 --channels 2
 
-# 支持的无损输出格式
+# 支持的无损输出格式（仅用于保存，播放始终为 WAV）
 xpuOutWave --format wav           # WAV PCM (默认)
 xpuOutWave --format flac          # FLAC 无损压缩
 xpuOutWave --format dsd           # DSD 格式 (需要设备支持)
@@ -680,7 +1161,7 @@ xpuIn2Wav | xpuOutWave --auto | xpuPlay
 xpuIn2Wav | xpuOutWave --rate 192000 --depth 32 --dither tpdf | xpuPlay
 ```
 
-#### 3.2.7 xpuPlay (音频播放)
+#### 3.2.8 xpuPlay (音频播放)
 
 音频播放模块，支持本地文件播放和网络流媒体播放。
 
@@ -863,7 +1344,7 @@ xpuPlay --url http://radio.example.com:8000/stream --metadata --reconnect 10
 xpuPlay --url http://example.com/hires.flac --network-buffer 1048576 --buffer-size 4096
 ```
 
-#### 3.2.8 xpuQueue (队列管理)
+#### 3.2.9 xpuQueue (队列管理)
 
 ```bash
 # 添加歌曲
@@ -891,7 +1372,7 @@ xpuQueue remove <index>
 xpuQueue clear
 ```
 
-#### 3.2.9 xpuMeta (元数据管理)
+#### 3.2.10 xpuMeta (元数据管理)
 
 ```bash
 # 读取元数据
@@ -911,7 +1392,7 @@ xpuMeta search <query> [--in <dir>]
 }
 ```
 
-#### 3.2.10 xpuDevice (设备管理)
+#### 3.2.11 xpuDevice (设备管理)
 
 ```bash
 # 列出设备
@@ -941,7 +1422,7 @@ xpuDevice test <device_id>
 
 ```bash
 # 简单播放（完整管道）
-xpuLoad song.flac | xpuIn2Wav | xpuFingerprint | xpuClassify | xpuProcess | xpuOutWave | xpuPlay
+xpuLoad song.flac | xpuIn2Wav | xpuFingerprint | xpuClassify | xpuVisualize | xpuProcess | xpuOutWave | xpuPlay
 
 # 带音量和均衡器
 xpuLoad song.flac | xpuIn2Wav | \
@@ -1000,14 +1481,46 @@ xpuLoad song.flac | xpuIn2Wav | xpuFingerprint | xpuClassify --dimension genre
 # 只分析情绪
 xpuLoad song.flac | xpuIn2Wav | xpuFingerprint | xpuClassify --dimension mood
 
+# === FFT 缓存优化示例 ===
+
+# 获取 FFT 缓存 ID
+CACHE_ID=$(xpuLoad song.flac | xpuIn2Wav 2>&1 | jq -r '.cache_id')
+
+# 使用 FFT 缓存进行指纹识别（避免重复 FFT 计算）
+xpuFingerprint --fft-cache $CACHE_ID
+
+# 使用 FFT 缓存进行分类（更快）
+xpuClassify --fft-cache $CACHE_ID --dimension all
+
+# 使用 FFT 缓存进行频域处理（均衡器等）
+xpuProcess --fft-cache $CACHE_ID --eq rock --compress 2:1
+
+# 完整优化管道（复用 FFT 缓存）
+xpuLoad song.flac | xpuIn2Wav > /dev/null  # 生成 WAV 并缓存 FFT
+CACHE_ID=$(xpuLoad song.flac | xpuIn2Wav 2>&1 | jq -r '.cache_id')
+xpuFingerprint --fft-cache $CACHE_ID
+xpuClassify --fft-cache $CACHE_ID --dimension all
+xpuProcess --fft-cache $CACHE_ID --eq rock | \
+    xpuOutWave --auto | xpuPlay
+
+# 批量处理（每个文件只计算一次 FFT）
+for file in ~/Music/*.flac; do
+    CACHE_ID=$(xpuLoad "$file" | xpuIn2Wav 2>&1 | jq -r '.cache_id')
+    xpuFingerprint --fft-cache $CACHE_ID
+    xpuClassify --fft-cache $CACHE_ID --dimension all
+    xpuProcess --fft-cache $CACHE_ID --eq flat
+done
+
 # 重复检测（比较两个文件）
 xpuLoad song1.flac | xpuIn2Wav | xpuFingerprint > fp1.json
 xpuLoad song2.flac | xpuIn2Wav | xpuFingerprint > fp2.json
 xpuMatch fp1.json fp2.json
 
-# 批量分析音乐库
+# 批量分析音乐库（使用 FFT 缓存优化）
 for file in ~/Music/**/*.flac; do
-    xpuLoad "$file" | xpuIn2Wav | xpuFingerprint | xpuClassify --dimension all
+    CACHE_ID=$(xpuLoad "$file" | xpuIn2Wav 2>&1 | jq -r '.cache_id')
+    xpuFingerprint --fft-cache $CACHE_ID
+    xpuClassify --fft-cache $CACHE_ID --dimension all
 done > music_library_analysis.json
 
 # 基于情绪自动播放列表
@@ -1058,6 +1571,66 @@ xpuProcess --volume 0.8 --eq rock < /tmp/audio.pipe | \
 
 # HTTPS 加密流
 xpuPlay --url https://secure.example.com/stream.flac
+
+# === 可视化相关示例 ===
+
+# 生成可视化数据
+xpuLoad song.flac | xpuIn2Wav | xpuVisualize
+
+# 生成完整可视化数据（波形+频谱）
+xpuLoad song.flac | xpuIn2Wav | xpuVisualize --type all
+
+# 只生成波形数据
+xpuLoad song.flac | xpuIn2Wav | xpuVisualize --type waveform
+
+# 只生成频谱数据
+xpuLoad song.flac | xpuIn2Wav | xpuVisualize --type spectrum
+
+# 生成概览模式（极低分辨率，快速）
+xpuLoad song.flac | xpuIn2Wav | xpuVisualize --overview
+
+# 完整管道（包含可视化）
+xpuLoad song.flac | xpuIn2Wav | xpuFingerprint | xpuClassify | \
+    xpuVisualize --cache-dir ~/.cache/xpu/vis | \
+    xpuProcess | xpuOutWave | xpuPlay
+
+# 后台生成可视化（不阻塞播放）
+xpuLoad song.flac | xpuIn2Wav | xpuVisualize &
+CACHE_ID=$(xpuLoad song.flac | xpuIn2Wav | xpuVisualize | jq -r '.cache_id')
+xpuLoad song.flac | xpuIn2Wav | xpuProcess | xpuOutWave | xpuPlay
+
+# 读取完整波形数据
+xpuVisualize --read a1b2c3d4e5f6 --type waveform
+
+# 读取部分波形数据（10-20秒范围）
+xpuVisualize --read a1b2c3d4e5f6 --type waveform --start 10 --end 20
+
+# 读取降采样数据（降低解析度）
+xpuVisualize --read a1b2c3d4e5f6 --type waveform --downsample 10
+
+# 读取概览数据（缩略图级别）
+xpuVisualize --read a1b2c3d4e5f6 --overview
+
+# 读取频谱数据
+xpuVisualize --read a1b2c3d4e5f6 --type spectrum
+
+# 读取特定时间段的频谱
+xpuVisualize --read a1b2c3d4e5f6 --type spectrum --start 30 --end 60
+
+# 输出为图像
+xpuVisualize --read a1b2c3d4e5f6 --overview --output image \
+    --width 800 --height 200 > waveform.png
+
+# 批量生成可视化数据
+for file in ~/Music/*.flac; do
+    xpuLoad "$file" | xpuIn2Wav | xpuVisualize --cache-dir ~/.cache/xpu/vis
+done
+
+# 缓存管理
+xpuVisualize --cache-list
+xpuVisualize --cache-stats
+xpuVisualize --cache-delete a1b2c3d4e5f6
+xpuVisualize --cache-clear
 ```
 
 ### 3.4 管道优化建议
@@ -1295,23 +1868,25 @@ SemanticRequest req{
     }
 };
 
-// Daemon 编排完整管道（包含指纹和分类）
+// Daemon 编排完整管道（包含指纹、分类和可视化）
 Pipe pipe = orchestrator.buildPipeline({
     "xpuLoad",         // 解析音频文件
     "xpuIn2Wav",       // 重采样到目标格式
     "xpuFingerprint",  // 生成音频指纹
     "xpuClassify",     // 音乐分类（流派、情绪、活动）
+    "xpuVisualize",    // 生成可视化数据
     "xpuProcess",      // DSP 处理
     "xpuOutWave",      // 输出格式转换
     "xpuPlay"          // 播放
 });
 
 // 等价于命令行：
-// xpuLoad file.flac | xpuIn2Wav | xpuFingerprint | xpuClassify --dimension all | xpuProcess | xpuOutWave --auto | xpuPlay
+// xpuLoad file.flac | xpuIn2Wav | xpuFingerprint | xpuClassify --dimension all | xpuVisualize | xpuProcess | xpuOutWave --auto | xpuPlay
 
-// 执行并返回结果（包含分类信息）
+// 执行并返回结果（包含分类和可视化信息）
 json result = orchestrator.executePipeline(pipe);
 // result["classification"] 包含流派、情绪、活动等信息
+// result["visualization"] 包含缓存 ID 和路径
 ```
 
 ## 5. MCP 接口设计
