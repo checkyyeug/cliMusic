@@ -1,16 +1,16 @@
-# XPU AI-Ready 音乐播放系统 设计文档 v3.3
+# XPU AI-Native 音乐播放系统 设计文档 v3.2
 
 ## 1. 项目概述
 
-XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能模块都是独立的 CLI 工具，可以被人类直接使用，也可以通过 MCP (Model Context Protocol) 供 Claude Skills 等 AI Agent 调用。
+XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能模块都是独立的 CLI 工具，可以被人类直接使用，也可以被 LLM/AI Agent 通过 MCP、API 或 Agent-to-Agent 协议调用。
 
 ### 核心特性
 
 - **CLI-First 设计**：每个模块都是独立的可执行文件，可单独使用
-- **AI-Ready**：通过 MCP 暴露所有功能，供 Claude Skills 调用
-- **语义外置**：语义理解由 Claude 负责，XPU 专注音频处理
+- **AI-Native**：内置 MCP (Model Context Protocol) 支持，LLM 可直接调用
 - **远程部署**：支持服务端+边缘设备分离架构，xpuPlay 可部署在树莓派等设备
-- **多层封装**：CLI → REST API → MCP，逐层抽象
+- **DLNA/AirPlay 支持**：xpuPlay 作为标准 DLNA/UPnP 和 AirPlay 播放器
+- **多层封装**：CLI → REST API → MCP → Agent，逐层抽象
 - **完全模块化**：Unix 哲学，一个程序只做一件事
 - **跨平台**：Windows, macOS, Linux, ARM (树莓派)
 - **专业音质**：只支持无损格式（FLAC/WAV/ALAC/DSD），最高支持 768kHz
@@ -25,7 +25,7 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
 ├─────────────────────────────────────────────────────────────────┤
 │ 人类用户 ←─ 命令行 ──→ CLI 模块                                   │
 │                         ↓                                        │
-│ Claude Skills ←─ MCP ──→ xpuDaemon (执行层)                     │
+│ AI Agent ←─ MCP/API ──→ xpuDaemon (语义层)                      │
 │                         ↓                                        │
 │                    CLI 模块编排                                   │
 └─────────────────────────────────────────────────────────────────┘
@@ -68,7 +68,7 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
 │  │  硬件: 树莓派 4/5, NVIDIA Jetson, Intel NUC, 等        │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
-│  Claude Skills ──→ xpuDaemon (服务器) ──→ xpuPlay (边缘设备)    │
+│  AI Agent ──→ xpuDaemon (服务器) ──→ xpuPlay (边缘设备)        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,34 +85,29 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘        │
 └───────┼────────────┼─────────────┼─────────────┼────────────────┘
         │            │             │             │
-        │      ┌─────┴─────┐   ┌───┴────┐       │
-        │      │           │   │        │       │
-┌───────▼──────▼─────┐ ┌──▼────────┴───────▼────┐
-│  Claude Skills    │ │   xpuDaemon (守护进程)  │
-│  (语义理解 + 调用)  │ │                         │
-│                    │ │  ┌──────────────────┐  │
-│  ┌──────────────┐  │ │  │   MCP Server      │  │
-│  │ 意图理解     │  │ │  │   (stdio)         │  │
-│  │ (Claude)     │  │ │  └────────┬─────────┘  │
-│  │              │  │ │           │            │
-│  │ 参数规范化   │  │ │  ┌────────┴─────────┐  │
-│  │              │  │ │  │  REST API        │  │
-│  └──────┬───────┘  │ │  │  (HTTP/WS)       │  │
-│         │          │ │  └────────┬─────────┘  │
-│         │ MCP      │ │           │            │
-│         ▼          │ │  ┌────────┴─────────┐  │
-│  ┌───────────┐     │ │  │ Agent Protocol   │  │
-│  │ MCP 调用  │─────┼─┼─>│ (WebSub/gRPC)    │  │
-│  └───────────┘     │ │  └────────┬─────────┘  │
-│                    │ │           │            │
-└────────────────────┼─┴───────────┼────────────┘
-                     │               │
-                     └───────┬───────┘
-                             ▼
-┌──────────────────────────────────────────────────────────┐
-│              模块编排引擎 (Orchestrator)                   │
-│   • 管道构建     • 资源调度     • 生命周期管理              │
-└──────────────────────────────────────────────────────────┘
+┌───────▼────────────▼─────────────▼─────────────▼────────────────┐
+│                  xpuDaemon (AI 原生守护进程)                      │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
+│  │  MCP Server  │  │  REST API    │  │  Agent Protocol     │   │
+│  │  (stdio)     │  │  (HTTP/WS)   │  │  (WebSub/gRPC)      │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘   │
+│         │                  │                     │              │
+│         └──────────────────┼─────────────────────┘              │
+│                            ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │              统一语义层 (Semantic Layer)                   │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │   │
+│  │  │ 意图识别     │  │ 参数规范化   │  │ 结果格式化   │     │   │
+│  │  │ (Intent)     │  │ (Normalize)  │  │ (Format)     │     │   │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘     │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                            ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │              模块编排引擎 (Orchestrator)                   │   │
+│  │   • 管道构建     • 资源调度     • 生命周期管理              │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -151,890 +146,16 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.1 Claude Skills 集成
-
-#### 2.1.1 架构设计
-
-**核心理念：**
-
-XPU 采用"外部语义 + 内部执行"的架构设计。语义理解由 Claude Skills 在外部完成，XPU 通过暴露清晰的 MCP 接口供 Claude 调用。
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                  Claude Skills → XPU 集成流程                    │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  用户请求                                                        │
-│  "播放我昨天听的那首摇滚乐"                                      │
-│      ↓                                                          │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              Claude Skills (外部)                        │   │
-│  │  • 理解自然语言请求                                       │   │
-│  │  • 分析用户意图                                           │   │
-│  │  • 决定调用哪些 MCP 工具                                  │   │
-│  │  • 处理复杂的多步骤操作                                   │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│      ↓                                                          │
-│  Claude 决定调用序列:                                           │
-│  1. xpu_queue_list --history --since yesterday                 │
-│  2. xpu_meta_search --filter genre:rock                       │
-│  3. xpu_queue_add --file selected_song                        │
-│  4. xpu_play                                                  │
-│      ↓                                                          │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              MCP 调用 (stdio)                            │   │
-│  │  Claude → MCP Server → xpuDaemon → CLI 模块              │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│      ↓                                                          │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              XPU 执行                                    │   │
-│  │  • 查询历史记录                                          │   │
-│  │  • 搜索摇滚音乐                                          │   │
-│  │  • 添加到队列                                            │   │
-│  │  • 开始播放                                              │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│      ↓                                                          │
-│  MCP 返回结果给 Claude                                          │
-│      ↓                                                          │
-│  Claude 格式化响应                                               │
-│  "正在播放: Bohemian Rhapsody (Queen)"                         │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-#### 2.1.2 Claude Skills 的职责
-
-**Claude Skills 负责：**
-
-```typescript
-// Claude Skills 示例代码
-const XPUSkill = {
-  // 理解用户请求
-  async understandRequest(userInput: string) {
-    // Claude 的自然语言理解能力
-    const intent = await this.parseIntent(userInput);
-    return intent;
-  },
-
-  // 规划操作序列
-  async planOperations(intent: Intent) {
-    const operations = [];
-
-    // 示例: "播放我昨天听的摇滚乐"
-    if (intent.action === "play" && intent.filter?.genre) {
-      // 1. 查询历史
-      operations.push({
-        tool: "xpu_queue_list",
-        params: { history: true, since: "yesterday" }
-      });
-
-      // 2. 搜索指定类型的音乐
-      operations.push({
-        tool: "xpu_meta_search",
-        params: { filter: { genre: intent.filter.genre } }
-      });
-
-      // 3. 添加到队列
-      operations.push({
-        tool: "xpu_queue_add",
-        params: { file: "${previous_result}" }
-      });
-
-      // 4. 播放
-      operations.push({
-        tool: "xpu_play",
-        params: {}
-      });
-    }
-
-    return operations;
-  },
-
-  // 执行 MCP 调用
-  async executeMCP(operation: Operation) {
-    return await mcpClient.callTool(operation.tool, operation.params);
-  },
-
-  // 格式化响应
-  async formatResponse(results: any[]) {
-    // 根据结果生成自然语言响应
-    return `正在播放: ${results[3].metadata.title} (${results[3].metadata.artist})`;
-  }
-};
-```
-
-#### 2.1.3 MCP 工具定义
-
-**XPU 暴露给 Claude 的 MCP 工具：**
-
-```typescript
-// MCP Tools 定义
-const XPUTools = {
-  // 播放控制
-  "xpu_play": {
-    description: "播放音频文件或队列",
-    parameters: {
-      file: { type: "string", description: "音频文件路径（可选）" },
-      queue: { type: "boolean", description: "是否播放队列（默认 false）" }
-    }
-  },
-
-  "xpu_pause": {
-    description: "暂停播放",
-    parameters: {}
-  },
-
-  "xpu_resume": {
-    description: "恢复播放",
-    parameters: {}
-  },
-
-  "xpu_stop": {
-    description: "停止播放",
-    parameters: {}
-  },
-
-  // 队列管理
-  "xpu_queue_list": {
-    description: "列出队列内容",
-    parameters: {
-      history: { type: "boolean", description: "是否包含历史记录" },
-      since: { type: "string", description: "时间范围（如 'yesterday'）" }
-    }
-  },
-
-  "xpu_queue_add": {
-    description: "添加歌曲到队列",
-    parameters: {
-      files: { type: "array", description: "文件路径列表" },
-      position: { type: "string", enum: ["next", "last"], description: "添加位置" }
-    }
-  },
-
-  "xpu_queue_clear": {
-    description: "清空队列",
-    parameters: {}
-  },
-
-  "xpu_queue_remove": {
-    description: "从队列移除歌曲",
-    parameters: {
-      id: { type: "string", description: "歌曲 ID" }
-    }
-  },
-
-  // 元数据查询
-  "xpu_meta_get": {
-    description: "获取音频文件元数据",
-    parameters: {
-      file: { type: "string", description: "文件路径" }
-    }
-  },
-
-  "xpu_meta_search": {
-    description: "搜索本地音乐库",
-    parameters: {
-      query: { type: "string", description: "搜索查询" },
-      filter: {
-        type: "object",
-        description: "过滤条件（如 {artist: "Queen", genre: "Rock"}）"
-      },
-      in: { type: "string", description: "搜索目录" }
-    }
-  },
-
-  // 音效控制
-  "xpu_process_volume": {
-    description: "设置音量",
-    parameters: {
-      level: { type: "number", min: 0, max: 1, description: "音量级别 (0.0-1.0)" }
-    }
-  },
-
-  "xpu_process_eq": {
-    description: "设置均衡器",
-    parameters: {
-      preset: {
-        type: "string",
-        enum: ["flat", "rock", "pop", "jazz", "classical", "electronic"],
-        description: "EQ 预设"
-      }
-    }
-  },
-
-  // 设备管理
-  "xpu_device_list": {
-    description: "列出可用音频设备",
-    parameters: {}
-  },
-
-  "xpu_device_set": {
-    description: "设置当前音频设备",
-    parameters: {
-      device: { type: "string", description: "设备名称或 ID" }
-    }
-  },
-
-  // 状态查询
-  "xpu_status": {
-    description: "获取当前播放状态",
-    parameters: {}
-  },
-
-  "xpu_health": {
-    description: "健康检查",
-    parameters: {}
-  }
-};
-```
-
-#### 2.1.4 典型对话流程
-
-**场景 1：简单播放**
-
-```
-用户: "播放 /music/song.flac"
-     ↓
-Claude: 识别意图 → 直接调用
-     ↓
-MCP: xpu_play {file: "/music/song.flac"}
-     ↓
-XPU: 执行播放
-     ↓
-Claude: "开始播放: song.flac"
-```
-
-**场景 2：复杂查询**
-
-```
-用户: "播放我昨天听过的摇滚乐"
-     ↓
-Claude: 分析需求，制定计划
-     ↓
-MCP 调用序列:
-  1. xpu_queue_list {history: true, since: "yesterday"}
-     → 返回: [song1.flac, song2.flac, ...]
-  2. xpu_meta_search {filter: {genre: "Rock"}}
-     → 返回: [rock1.flac, rock2.flac, ...]
-  3. xpu_queue_add {files: [rock1.flac]}
-  4. xpu_play {}
-     ↓
-Claude: "正在播放你昨天听过的摇滚乐：Bohemian Rhapsody (Queen)"
-```
-
-**场景 3：智能推荐**
-
-```
-用户: "推荐一些类似这首歌的音乐"
-     ↓
-Claude: 获取当前播放信息
-     ↓
-MCP: xpu_status {}
-     → 返回: {current_track: {artist: "Queen", genre: "Rock", bpm: 120}}
-     ↓
-Claude: 基于特征搜索类似音乐
-     ↓
-MCP: xpu_meta_search {filter: {genre: "Rock", bpm: ">110"}}
-     ↓
-Claude: "我找到了一些类似的音乐，包括 Beatles 和 Led Zeppelin 的歌曲，要添加到队列吗？"
-```
-
-#### 2.1.5 Claude Skills 配置
-
-**Skill 定义文件：**
-
-```yaml
-# xpu.claude-skill.yaml
-name: XPU Music Player
-description: AI-Native music player control
-version: 1.0.0
-
-mcp_servers:
-  xpu:
-    command: xpuDaemon
-    args: [--mcp, --stdio]
-    timeout: 30000
-
-tools:
-  - xpu_play
-  - xpu_pause
-  - xpu_resume
-  - xpu_stop
-  - xpu_queue_list
-  - xpu_queue_add
-  - xpu_queue_clear
-  - xpu_queue_remove
-  - xpu_meta_get
-  - xpu_meta_search
-  - xpu_process_volume
-  - xpu_process_eq
-  - xpu_device_list
-  - xpu_device_set
-  - xpu_status
-  - xpu_health
-
-# Claude 的行为指导
-instructions: |
-  You are an AI music assistant controlling the XPU music player.
-  - Always confirm file paths before playing
-  - Use xpu_meta_search to find music by artist, genre, or mood
-  - Use xpu_queue_list to check what's currently in the queue
-  - For complex requests, break them down into multiple tool calls
-  - Provide clear feedback about what you're doing
-  - Handle errors gracefully and suggest alternatives
-
-examples:
-  - request: "播放 Bohemian Rhapsody"
-    actions:
-      - xpu_meta_search {query: "Bohemian Rhapsody"}
-      - xpu_queue_add {files: [result[0].file]}
-      - xpu_play {}
-
-  - request: "昨天听的歌有哪些？"
-    actions:
-      - xpu_queue_list {history: true, since: "yesterday"}
-      - format: "昨天你听了以下歌曲：{results}"
-
-  - request: "来点适合工作的音乐"
-    actions:
-      - xpu_meta_search {filter: {mood: "calm", activity: "focus"}}
-      - xpu_queue_add {files: [results...]}
-      - xpu_play {}
-```
-
-#### 2.1.6 为什么这样设计
-
-**优势：**
-
-1. **职责分离**：XPU 专注于音频处理，Claude 负责语义理解
-2. **更强的 AI 能力**：利用 Claude 的强大推理能力，无需自己实现 NLP
-3. **灵活性**：Claude Skills 可以独立更新，不影响 XPU 核心
-4. **可扩展性**：未来可以支持其他 AI（GPT-4、Gemini 等）
-5. **简单性**：XPU 代码库更小，专注于核心功能
-
-**与传统方案对比：**
-
-| 方面 | 传统方案（内置语义层） | XPU 方案（Claude Skills） |
-|------|---------------------|-------------------------|
-| 语义理解 | 规则/小型 LLM | Claude 完整能力 |
-| 代码复杂度 | 高 | 低 |
-| 维护成本 | 高 | 低 |
-| 扩展性 | 受限 | 灵活 |
-| AI 能力 | 有限 | 强大 |
-| 更新频率 | 需要发布新版本 | Claude 自动更新 |
-
 ### 2.2 架构原则
 
 1. **CLI-First**: 每个模块都可独立运行，人类可直接使用
-2. **AI-Ready**: 所有功能通过 MCP 暴露，供 Claude Skills 调用
-3. **渐进式封装**: CLI → REST API → MCP，每层增加抽象
+2. **AI-Native**: 所有功能都通过语义 API 暴露给 AI
+3. **渐进式封装**: CLI → API → MCP，每层增加抽象
 4. **状态无关**: CLI 模块无状态，状态由 Daemon 管理
-5. **可观测性**: 所有操作都产生结构化日志、指标和追踪
-6. **容错设计**: 模块崩溃不影响其他模块，错误有明确边界
-7. **显式优于隐式**: 所有状态变更都通过明确的 API 调用
-8. **离线优先**: 核心功能不依赖外部服务，在线服务为增强
-9. **语义外置**: 语义理解由外部 AI (Claude) 负责，XPU 专注执行
+5. **可观测性**: 所有操作都产生结构化日志
+6. **容错设计**: 模块崩溃不影响其他模块
 
-### 2.3 错误处理机制
-
-#### 2.3.1 错误码体系
-
-所有 CLI 模块遵循统一的错误码定义：
-
-```cpp
-// 错误码格式: 0xCC
-// 高4位: 类别 (Category)
-// 低4位: 具体错误
-
-enum class ErrorCode : uint8_t {
-    // 成功
-    Success = 0x00,
-
-    // 系统错误 (0x1x)
-    UnknownError = 0x10,
-    OutOfMemory = 0x11,
-    InternalError = 0x12,
-
-    // 参数错误 (0x2x)
-    InvalidArgument = 0x20,
-    MissingArgument = 0x21,
-    InvalidOption = 0x22,
-    ConflictingOptions = 0x23,
-
-    // 文件/IO 错误 (0x3x)
-    FileNotFound = 0x30,
-    FileReadError = 0x31,
-    FileWriteError = 0x32,
-    PermissionDenied = 0x33,
-    InvalidFormat = 0x34,
-
-    // 音频解码错误 (0x4x)
-    AudioDecodeError = 0x40,
-    UnsupportedCodec = 0x41,
-    CorruptedAudio = 0x42,
-    SampleRateMismatch = 0x43,
-
-    // 网络错误 (0x6x)
-    NetworkUnreachable = 0x60,
-    ApiServiceUnavailable = 0x61,
-    ApiTimeout = 0x62,
-    ApiRateLimit = 0x63,
-
-    // 资源错误 (0x7x)
-    DeviceNotFound = 0x70,
-    DeviceBusy = 0x71,
-    OutOfDiskSpace = 0x72
-};
-
-// 进程退出码: exit_code = static_cast<int>(error_code);
-```
-
-#### 2.3.2 错误消息格式
-
-**CLI 错误输出 (stderr):**
-
-```json
-{
-  "error": {
-    "code": 52,
-    "category": "File",
-    "name": "FileNotFound",
-    "message": "Audio file not found: /path/to/song.flac",
-    "context": {
-      "file": "/path/to/song.flac",
-      "module": "xpuLoad",
-      "timestamp": "2026-01-07T12:34:56Z"
-    },
-    "suggestion": "Check if the file exists and you have read permission"
-  }
-}
-```
-
-**API 错误响应 (HTTP):**
-
-```json
-{
-  "error": {
-    "code": "FILE_NOT_FOUND",
-    "status": 404,
-    "message": "Requested audio file not found",
-    "details": {
-      "file_id": "abc123",
-      "path": "/music/song.flac"
-    },
-    "request_id": "req_20250107_123456"
-  }
-}
-```
-
-#### 2.3.3 错误传播机制
-
-**管道模式下的错误处理:**
-
-```bash
-# 原则：第一个模块出错时，立即停止整个管道
-xpuLoad song.flac | xpuIn2Wav | xpuPlay
-
-# xpuLoad 失败时:
-# 1. 输出错误到 stderr (JSON 格式)
-# 2. 返回非零退出码 (如 64 = FileNotFound)
-# 3. 后续模块检测到 stdin 为空或收到 SIGPIPE
-```
-
-**Daemon 调用模式下的错误处理:**
-
-```bash
-# Daemon 捕获子进程退出码
-# 将错误转换为 MCP 错误响应（返回给 Claude Skills）
-# 记录完整错误上下文到日志
-```
-
-### 2.4 状态管理机制
-
-#### 2.4.1 状态同步原则
-
-**核心原则：单一真相源 (Single Source of Truth)**
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      状态管理架构                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              xpuDaemon (状态中心)                        │   │
-│  │                                                          │   │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐              │   │
-│  │  │ 播放状态 │  │ 队列状态 │  │ 设备状态 │              │   │
-│  │  │ State    │  │ Queue    │  │ Device   │              │   │
-│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘              │   │
-│  │       │            │            │                       │   │
-│  │       └────────────┼────────────┘                       │   │
-│  │                    ▼                                    │   │
-│  │         ┌──────────────────────┐                        │   │
-│  │         │   状态持久化存储      │                        │   │
-│  │         │   (SQLite/JSON)      │                        │   │
-│  │         └──────────────────────┘                        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                        ↕ WebSocket 推送                        │
-│  ┌───────────────────┼───────────────────────────────────┐     │
-│  │                   │                                   │     │
-│  │  ┌────────▼──────┐ │ ┌────────▼──────┐               │     │
-│  │  │ CLI 直接调用  │ │ │ API/MCP 调用  │               │     │
-│  │  │ (只读操作)    │ │ │ (读写操作)    │               │     │
-│  │  └───────────────┘ │ └───────────────┘               │     │
-│  │                                                          │     │
-│  │  原则: CLI 直接调用不能修改状态                          │     │
-│  │       修改状态必须通过 Daemon                            │     │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-#### 2.4.2 状态操作规范
-
-**只读操作（CLI 可直接执行）：**
-
-```bash
-# 查询类操作不修改状态，可直接通过 CLI
-xpuQueue list           # 只读，返回队列快照
-xpuMeta get song.flac   # 只读，返回元数据
-xpuDevice list          # 只读，返回设备列表
-```
-
-**修改操作（必须通过 Daemon）：**
-
-```bash
-# 修改状态的操作必须通过 Daemon
-# 方式1: CLI 工具（内部调用 Daemon API）
-xpuQueue add song.flac --daemon
-xpuPlay play --daemon
-
-# 方式2: 直接调用 API
-curl -X POST http://localhost:8080/api/queue/add \
-  -H "Content-Type: application/json" \
-  -d '{"file": "song.flac"}'
-
-# 方式3: MCP 调用
-mcp_call("xpu_queue_add", {"file": "song.flac"})
-```
-
-#### 2.4.3 状态同步保证
-
-**WebSocket 实时推送:**
-
-```json
-// 状态变更事件
-{
-  "event": "state_changed",
-  "timestamp": "2026-01-07T12:34:56.789Z",
-  "changes": {
-    "queue": {
-      "action": "add",
-      "track": {
-        "id": "track_123",
-        "file": "song.flac",
-        "position": 0
-      }
-    }
-  },
-  "state_version": 42  // 状态版本号，用于检测冲突
-}
-```
-
-**状态版本控制:**
-
-```bash
-# 每次状态变更递增版本号
-# 客户端可基于版本号检测状态变化
-
-# 请求时携带版本号
-GET /queue?since=42
-
-# 响应包含增量更新
-{
-  "queue": [...],
-  "since": 42,
-  "current": 45,
-  "changes": [...]
-}
-```
-
-### 2.5 并发控制机制
-
-#### 2.5.1 资源锁机制
-
-**播放设备锁:**
-
-```cpp
-// 播放设备同一时间只能被一个流占用
-enum class LockMode {
-    Shared,   // 多个读取者
-    Exclusive // 唯一写入者
-};
-
-// xpuPlay 启动时尝试获取设备锁
-// 如果设备被占用，返回错误 (DeviceBusy = 0x71)
-```
-
-**队列操作事务:**
-
-```bash
-# 队列操作支持原子性
-xpuQueue add song1.flac song2.flac --atomic
-# 要么全部添加，要么全部失败
-
-# 批量操作
-xpuQueue clear && xpuQueue add album/*.flac
-```
-
-#### 2.5.2 冲突检测
-
-```bash
-# 状态版本冲突检测
-PUT /queue/track/123
-{
-  "position": 5,
-  "expected_version": 42  // 期望的版本号
-}
-
-# 如果当前版本不是 42，返回 409 Conflict
-{
-  "error": "Conflict",
-  "current_version": 45,
-  "message": "State was modified by another client"
-}
-```
-
-### 2.6 模块编排生命周期管理
-
-#### 2.6.1 管道模式的生命周期
-
-**标准管道流程：**
-
-```bash
-# 用户命令
-xpuLoad song.flac | xpuIn2Wav | xpuPlay
-
-# Daemon 的编排过程
-```
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                  管道生命周期管理                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  1. 初始化阶段                                                  │
-│     ┌──────────────────────────────────────────────────────┐  │
-│     │ • 解析管道命令，识别模块序列                          │  │
-│     │ • 验证每个模块是否存在且可执行                        │  │
-│     │ • 分配管道 ID (pipe_id)                               │  │
-│     │ • 创建管道状态记录                                    │  │
-│     └──────────────────────────────────────────────────────┘  │
-│                                                                 │
-│  2. 启动阶段                                                    │
-│     ┌──────────────────────────────────────────────────────┐  │
-│     │ • fork/exec 第一个模块 (xpuLoad)                     │  │
-│     │ • 创建管道连接 (pipe)                                 │  │
-│     │ • fork/exec 后续模块                                  │  │
-│     │ • 设置信号处理器 (SIGCHLD, SIGPIPE)                   │  │
-│     └──────────────────────────────────────────────────────┘  │
-│                                                                 │
-│  3. 运行阶段                                                    │
-│     ┌──────────────────────────────────────────────────────┐  │
-│     │ • 监控子进程状态                                      │  │
-│     │ • 收集各模块输出                                      │  │
-│     │ • 检测错误和异常                                      │  │
-│     │ • 记录性能指标                                        │  │
-│     └──────────────────────────────────────────────────────┘  │
-│                                                                 │
-│  4. 清理阶段（正常或异常）                                      │
-│     ┌──────────────────────────────────────────────────────┐  │
-│     │ • 发送 SIGTERM 给所有子进程                           │  │
-│     │ • 等待子进程退出（超时 5 秒）                          │  │
-│     │ • 强制杀死未退出的进程 (SIGKILL)                      │  │
-│     │ • 关闭管道文件描述符                                  │  │
-│     │ • 清理临时文件                                        │  │
-│     │ • 更新管道状态记录                                    │  │
-│     └──────────────────────────────────────────────────────┘  │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-#### 2.6.2 资源管理
-
-**管道状态追踪：**
-
-```json
-{
-  "pipe_id": "pipe_20250107_123456",
-  "status": "running",
-  "modules": [
-    {
-      "name": "xpuLoad",
-      "pid": 12345,
-      "status": "running",
-      "start_time": "2026-01-07T12:34:56Z"
-    },
-    {
-      "name": "xpuIn2Wav",
-      "pid": 12346,
-      "status": "running",
-      "start_time": "2026-01-07T12:34:56Z"
-    },
-    {
-      "name": "xpuPlay",
-      "pid": 12347,
-      "status": "running",
-      "start_time": "2026-01-07T12:34:56Z"
-    }
-  ],
-  "resources": {
-    "memory_mb": 125,
-    "cpu_percent": 5.2,
-    "fds": 12
-  }
-}
-```
-
-**子进程监控：**
-
-```cpp
-// Daemon 的子进程管理
-class PipeManager {
-public:
-    PipeID create(const std::vector<Module>& modules);
-
-    // 监控子进程
-    void monitor(PipeID id);
-
-    // 处理子进程退出
-    void onChildExit(pid_t pid, int status);
-
-    // 清理资源
-    void cleanup(PipeID id);
-
-private:
-    // SIGCHLD 处理
-    static void sigchldHandler(int sig);
-
-    // 超时检查
-    void checkTimeouts();
-};
-```
-
-#### 2.6.3 错误恢复
-
-**模块崩溃处理：**
-
-```bash
-# 场景：xpuPlay 崩溃
-
-# 1. Daemon 检测到 SIGCHLD
-# 2. 检查退出码 (非零)
-# 3. 判断是哪个模块崩溃
-# 4. 清理整个管道（因为管道断裂）
-# 5. 返回错误给用户
-
-# 错误响应
-{
-  "error": {
-    "code": "MODULE_CRASHED",
-    "module": "xpuPlay",
-    "pid": 12347,
-    "exit_code": 139,  // SIGSEGV
-    "message": "Playback module crashed",
-    "pipe_id": "pipe_20250107_123456",
-    "action_taken": "pipeline_cleaned"
-  }
-}
-```
-
-**优雅关闭：**
-
-```bash
-# 用户请求停止
-xpuPlayCtrl stop
-
-# Daemon 的处理流程:
-# 1. 发送 SIGTERM 给 xpuPlay
-# 2. 等待最多 5 秒让模块正常退出
-# 3. 如果超时，发送 SIGKILL 强制退出
-# 4. 清理管道和子进程
-# 5. 释放设备锁
-# 6. 更新状态（停止）
-```
-
-#### 2.6.4 网络传输的生命周期
-
-**流式传输的连接管理：**
-
-```bash
-# 场景：服务器 → 边缘播放器的音频流
-
-# 1. 连接建立
-xpuStream --target ws://192.168.1.100:8080/stream
-│
-├─> WebSocket 握手
-├─> 认证（如果启用）
-└─> 协商参数（编解码、缓冲）
-
-# 2. 数据传输
-│
-├─> 分块发送音频数据
-├─> 监控网络状态
-├─> 处理控制命令（暂停/恢复/跳转）
-└─> 心跳检测（每 10 秒）
-
-# 3. 错误处理
-│
-├─> 网络中断
-│   └─> 自动重连（最多 5 次）
-├─> 缓冲下溢
-│   └─> 暂停播放，等待数据
-└─> 对方断开
-    └─> 清理本地资源
-
-# 4. 连接关闭
-│
-├─> 发送关闭帧
-├─> 等待对方确认
-└─> 释放资源
-```
-
-**断点续传：**
-
-```bash
-# 网络中断后恢复
-xpuStream --target ws://192.168.1.100:8080/stream \
-    --resume \
-    --offset 1234567  # 从上次中断的位置继续
-```
-
-#### 2.6.5 资源限制
-
-**防止资源耗尽：**
-
-```toml
-# xpuDaemon.conf
-
-[resource_limits]
-# 单用户最大并发管道数
-max_pipes_per_user = 5
-
-# 单个管道最大内存 (MB)
-max_memory_per_pipe = 500
-
-# 单个管道最大运行时间（秒，0=无限制）
-max_pipe_duration = 3600
-
-# 最大打开文件描述符数
-max_open_fds = 1024
-
-# 空闲超时（秒）
-idle_timeout = 300
-```
-
-### 2.7 多层接口设计
+### 2.3 多层接口设计
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -1069,678 +190,6 @@ idle_timeout = 300
 │ 第0层: Core (核心功能)                                        │
 │   - xpuLoad, xpuIn2Wav, xpuPlay, ...                         │
 └─────────────────────────────────────────────────────────────┘
-```
-
-### 2.7 可观测性设计
-
-#### 2.7.1 统一日志格式
-
-**日志级别定义:**
-
-```cpp
-enum class LogLevel {
-    TRACE = 0,    // 详细跟踪信息
-    DEBUG = 1,    // 调试信息
-    INFO = 2,     // 一般信息
-    WARN = 3,     // 警告
-    ERROR = 4,    // 错误
-    FATAL = 5     // 致命错误
-};
-```
-
-**日志格式 (JSON):**
-
-```json
-{
-  "timestamp": "2026-01-07T12:34:56.789Z",
-  "level": "INFO",
-  "module": "xpuPlay",
-  "pid": 12345,
-  "thread_id": 67890,
-  "message": "Started audio playback",
-  "context": {
-    "file": "/music/song.flac",
-    "device": "default",
-    "sample_rate": 96000,
-    "duration": 245.8
-  },
-  "request_id": "req_20250107_123456",
-  "trace_id": "trace_abc123"
-}
-```
-
-**CLI 日志输出:**
-
-```bash
-# 默认: stderr 输出 JSON 格式日志
-xpuPlay song.flac
-
-# 可选: 人类可读格式
-xpuPlay song.flac --log-format text
-
-# 日志级别过滤
-xpuPlay song.flac --log-level WARN
-
-# 日志文件输出
-xpuPlay song.flac --log-file /var/log/xpu/play.log
-```
-
-#### 2.7.2 指标收集
-
-**Prometheus 指标导出:**
-
-```cpp
-// Counter: 计数器，只增不减
-xpu_playback_started_total{device="default"} 1234
-xpu_tracks_played_total{format="flac"} 5678
-
-// Gauge: 仪表盘，可增可减
-xpu_current_playback_position_seconds 123.456
-xpu_queue_length 42
-xpu_memory_usage_bytes 67108864
-
-// Histogram: 直方图，分布统计
-xpu_request_duration_seconds_bucket{le="0.1"} 1000
-xpu_request_duration_seconds_bucket{le="0.5"} 4500
-xpu_request_duration_seconds_bucket{le="+Inf"} 5000
-xpu_request_duration_seconds_sum 1250.0
-xpu_request_duration_seconds_count 5000
-
-// Summary: 摘要，统计值
-xpu_audio_processing_duration{quantile="0.5"} 0.123
-xpu_audio_processing_duration{quantile="0.95"} 0.456
-xpu_audio_processing_duration{quantile="0.99"} 0.789
-```
-
-**指标暴露端点:**
-
-```bash
-# Daemon 暴露 metrics 端口
-curl http://localhost:9090/metrics
-
-# 输出 Prometheus 格式指标
-```
-
-#### 2.7.3 分布式追踪
-
-**请求追踪 ID:**
-
-```bash
-# 每个请求自动生成 trace_id
-# 跨模块传递追踪 ID
-
-# 方式1: 环境变量
-XPU_TRACE_ID=trace_abc123 xpuLoad song.flac | xpuIn2Wav
-
-# 方式2: 传递给 Daemon
-curl -H "X-Trace-ID: trace_abc123" http://localhost:8080/api/play
-```
-
-**追踪上下文:**
-
-```json
-{
-  "trace_id": "trace_abc123",
-  "span_id": "span_def456",
-  "parent_span_id": "span_ghi789",
-  "operation": "xpuPlay",
-  "start_time": "2026-01-07T12:34:56.789Z",
-  "duration_ms": 1234,
-  "tags": {
-    "file": "song.flac",
-    "device": "default"
-  }
-}
-```
-
-#### 2.7.4 健康检查
-
-**模块健康状态:**
-
-```bash
-# 健康检查端点
-curl http://localhost:8080/health
-
-# 响应
-{
-  "status": "healthy",
-  "version": "1.0.0",
-  "uptime_seconds": 86400,
-  "components": {
-    "daemon": "healthy",
-    "audio_device": "healthy",
-    "database": "healthy",
-    "cache": "healthy"
-  },
-  "checks": {
-    "memory_usage": "67 MB",
-    "cpu_usage": "5%",
-    "disk_usage": "45%"
-  }
-}
-```
-
-#### 2.7.5 性能基准
-
-**目标性能指标:**
-
-| 指标 | 目标值 | 测量方法 |
-|------|--------|---------|
-| CLI 启动时间 | < 100ms | time xpuLoad --version |
-| 命令响应时间 | < 50ms | API 请求端到端 |
-| 播放启动延迟 | < 200ms | xpuPlay 到首音频输出 |
-| 内存占用（空闲） | < 100MB | ps aux \| grep xpuDaemon |
-| 内存占用（播放） | < 250MB | 播放 96kHz FLAC 时 |
-| FFT 计算速度 | > 100x 实时 | 5分钟音频 < 3秒 |
-| 网络流延迟 | < 50ms | LAN 环境下 |
-
-**基准测试命令:**
-
-```bash
-# 性能基准测试
-xpuBenchmark --module all --duration 60
-
-# 输出
-{
-  "module": "xpuIn2Wav",
-  "operations": 1250,
-  "duration_ms": 60000,
-  "ops_per_second": 20.83,
-  "avg_latency_ms": 48.0,
-  "p95_latency_ms": 52.0,
-  "p99_latency_ms": 58.0
-}
-```
-
-### 2.8 MVP 范围定义
-
-#### 2.8.1 核心功能（必须实现）
-
-**MVP 阶段 1 - 基础播放:**
-- ✅ xpuLoad: 支持 FLAC/WAV 解析
-- ✅ xpuIn2Wav: 统一转换为 WAV
-- ✅ xpuPlay: 本地播放
-- ✅ xpuQueue: 基本队列管理
-- ✅ xpuDaemon: 基础守护进程
-- ✅ REST API: CRUD 操作
-
-**MVP 阶段 2 - AI 集成:**
-- ✅ MCP 协议支持
-- ✅ Claude Skills 集成
-- ✅ 模块编排引擎
-- ✅ WebSocket 实时推送
-
-#### 2.8.2 功能约束（明确不做）
-
-**不在 MVP 范围内:**
-- ❌ 电子管模拟（12AX7, EL34, 6L6 等）→ 移至可选模块
-- ❌ 高级 DSP 效果（合唱、镶边、移相等）→ 简化为基础 EQ
-- ❌ DLNA/AirPlay 推送 → 延后到 v1.1
-- ❌ 可视化功能（xpuVisualize）→ 延后到 v1.2
-- ❌ 在线数据库查询（MusicBrainz/AcousticBrainz）→ 延后到 v1.2
-- ❌ 多用户支持 → MVP 仅支持单用户本地
-- ❌ 云同步 → 仅本地存储
-
-#### 2.8.3 简化的 DSP 功能
-
-**MVP 阶段的 xpuProcess:**
-
-```bash
-# 仅支持基础功能
-xpuProcess --volume 0.8          # 音量控制
-xpuProcess --eq rock             # 预设均衡器
-xpuProcess --fade-in 2000        # 淡入淡出
-
-# 不支持（延后到 v1.1+）:
-# xpuProcess --reverb hall
-# xpuProcess --tube EL34
-# xpuProcess --chorus
-```
-
-#### 2.8.4 性能约束
-
-| 约束 | MVP 目标 | 未来版本 |
-|------|---------|---------|
-| 音频格式 | FLAC, WAV | ALAC, DSD |
-| 采样率 | 最高 96kHz | 最高 768kHz |
-| 位深 | 16/24-bit | 32-bit |
-| 声道 | 立体声 (2.0) | 5.1, 7.1 |
-| 同时播放 | 1 个流 | 多流混音 |
-
-### 2.9 分布式执行模式
-
-#### 2.9.1 设计原则
-
-**分布式执行 (Distributed Execution):**
-
-```
-核心原则：重计算任务可分发到 GPU 服务器，播放可在本地或远程设备
-
-┌─────────────────────────────────────────────────────────────────┐
-│                    执行位置分级                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  本地执行（默认）:                                              │
-│  • 文件 I/O：xpuLoad                                            │
-│  • 格式转换：xpuIn2Wav                                          │
-│  • 队列管理：xpuQueue                                           │
-│  • 元数据：xpuMeta, xpuClassify                                 │
-│  • 简单 DSP：xpuProcess (基础 EQ)                               │
-│                                                                 │
-│  远程 GPU 服务器（可选）:                                       │
-│  • 重计算：xpuFingerprint (指纹生成)                            │
-│  • 复杂 DSP：xpuProcess (混响、电子管等)                        │
-│  • GPU 加速：CUDA/Metal/OpenCL                                 │
-│                                                                 │
-│  远程播放设备（可选）:                                          │
-│  • 边缘播放：树莓派、NVIDIA Jetson、智能音箱                     │
-│  • 网络流传输：HTTP/WebSocket/TCP                               │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-#### 2.9.2 分布式执行模式
-
-**设计目标：**
-
-XPU 支持将重计算任务（指纹生成、DSP 处理）分发到远程 GPU 服务器，同时保持轻量级模块在本地执行，播放模块可选择本地或远程设备。
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    分布式执行架构                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  本地服务器 (Local Server)                                     │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  xpuLoad → xpuIn2Wav → xpuFingerprint(?) → xpuProcess(?) │   │
-│  │  (本地)    (本地)       (可选远程)        (可选远程)      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                    ──────────────────────────                    │
-│                      HTTP/WebSocket/RPC                         │
-│                    ──────────────────────────                    │
-│                              │                                  │
-│  ┌─────────────────────────────▼───────────────────────────┐   │
-│  │         GPU 服务器 (Remote GPU Server)                    │   │
-│  │  ┌──────────────────┐    ┌──────────────────┐            │   │
-│  │  │ xpuFingerprint   │    │  xpuProcess      │            │   │
-│  │  │ (GPU 加速指纹)   │    │  (GPU 加速 DSP)  │            │   │
-│  │  │ • CUDA/Metal     │    │  • 并行处理      │            │   │
-│  │  │ • 多 GPU 并行    │    │  • 高性能计算    │            │   │
-│  │  └──────────────────┘    └──────────────────┘            │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                    ──────────────────────────                    │
-│                      HTTP/WebSocket/TCP                         │
-│                    ──────────────────────────                    │
-│                              │                                  │
-│  ┌─────────────────────────────▼───────────────────────────┐   │
-│  │         播放设备 (Player Device)                          │   │
-│  │  ┌────────────────────────────────────────────────────┐  │   │
-│  │  │           xpuPlay (本地或远程)                       │  │   │
-│  │  │  • 本地: 直接播放到音频设备                          │  │   │
-│  │  │  • 远程: 接收网络流，播放到边缘设备                  │  │   │
-│  │  └────────────────────────────────────────────────────┘  │   │
-│  │                                                           │   │
-│  │  硬件: 本地机器 / 树莓派 / NVIDIA Jetson / 智能音箱      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-#### 2.9.3 模块执行模式
-
-**本地执行模块（默认）：**
-
-| 模块 | 执行位置 | 说明 |
-|------|---------|------|
-| xpuLoad | 本地 | 文件 I/O 操作，必须在本地 |
-| xpuIn2Wav | 本地 | 轻量级转换，本地执行足够快 |
-| xpuClassify | 本地 | 基于本地特征分类 |
-| xpuMeta | 本地 | 元数据读取和编辑 |
-| xpuQueue | 本地 | 队列状态管理 |
-| xpuCache | 本地 | 缓存管理 |
-
-**可远程执行模块（需要 GPU 加速）：**
-
-| 模块 | 本地模式 | 远程模式 | 适用场景 |
-|------|---------|---------|---------|
-| xpuFingerprint | CPU 计算 | GPU 服务器 | 大批量指纹生成、音乐指纹匹配 |
-| xpuProcess | CPU 处理 | GPU 服务器 | 复杂 DSP 效果、实时处理 |
-
-**播放设备选择：**
-
-| 模式 | 说明 | 典型设备 |
-|------|------|---------|
-| 本地播放 | xpuPlay 在服务器本地播放 | 开发机、桌面环境 |
-| 远程播放 | xpuPlay 在边缘设备接收流播放 | 树莓派 + 音响、智能音箱 |
-
-#### 2.9.4 远程 GPU 服务配置
-
-**xpuFingerprint 远程模式：**
-
-```bash
-# 本地模式（默认）
-xpuFingerprint --fft-cache abc123
-# 在本地 CPU 上执行
-
-# 远程 GPU 模式
-xpuFingerprint --fft-cache abc123 \
-    --remote gpu-server.example.com:8080 \
-    --backend cuda \
-    --device 0
-
-# 或者使用配置文件中的预设
-xpuFingerprint --fft-cache abc123 --remote-preset high-performance
-```
-
-**xpuProcess 远程模式：**
-
-```bash
-# 本地模式（简单 EQ）
-xpuProcess --eq rock --volume 0.8
-# 在本地 CPU 上执行
-
-# 远程 GPU 模式（复杂 DSP）
-xpuProcess --eq custom:60=+3,250=-2,1000=0,4000=+2,16000=+4 \
-    --reverb hall --decay 2.5 --wet 0.3 \
-    --remote gpu-server.example.com:8080 \
-    --backend cuda
-
-# 远程处理，本地播放
-xpuLoad song.flac | xpuIn2Wav | \
-    xpuProcess --remote gpu-server --reverb hall | \
-    xpuPlay --local
-```
-
-**自动选择模式：**
-
-```bash
-# 自动检测：复杂效果自动使用远程 GPU
-xpuProcess --auto-remote \
-    --reverb hall --tube EL34 --chorus
-
-# 行为：
-# 1. 检测到复杂效果链
-# 2. 自动查询可用的 GPU 服务器
-# 3. 选择负载最低的服务器
-# 4. 将音频流发送到远程处理
-# 5. 接收处理后的结果
-```
-
-#### 2.9.5 远程服务发现
-
-**自动发现 GPU 服务器：**
-
-```bash
-# 发现局域网内的 XPU GPU 服务器
-xpuFingerprint --discover-gpu
-
-# 输出:
-{
-  "servers": [
-    {
-      "id": "gpu-server-001",
-      "name": "RTX 4090 Workstation",
-      "host": "192.168.1.100",
-      "port": 8080,
-      "backend": "cuda",
-      "gpu": {
-        "name": "NVIDIA RTX 4090",
-        "memory_mb": 24576,
-        "cuda_cores": 16384,
-        "compute_capability": "8.9"
-      },
-      "performance": {
-        "fingerprint_speed": "500x realtime",
-        "dsp_throughput": "1000 channels"
-      },
-      "load": {
-        "current_utilization": 0.15,
-        "queue_length": 2
-      },
-      "status": "available"
-    },
-    {
-      "id": "gpu-server-002",
-      "name": "Mac Studio",
-      "host": "192.168.1.101",
-      "port": 8080,
-      "backend": "metal",
-      "gpu": {
-        "name": "Apple M2 Ultra",
-        "memory_mb": 128000,
-        "neural_engine": true
-      },
-      "status": "available"
-    }
-  ],
-  "recommended": "gpu-server-001"
-}
-```
-
-#### 2.9.6 播放设备配置
-
-**本地播放：**
-
-```bash
-# 在服务器本地播放
-xpuLoad song.flac | xpuIn2Wav | xpuPlay --device hw:0,0
-
-# 或指定设备
-xpuPlay --device "Built-in Audio"
-```
-
-**远程播放（边缘设备）：**
-
-```bash
-# 发送到网络播放设备
-xpuLoad song.flac | xpuIn2Wav | \
-    xpuProcess --remote gpu-server --eq rock | \
-    xpuStream --target raspberry-pi:8080
-
-# 边缘设备（树莓派）接收
-# raspberry-pi 上运行：
-xpuPlay --mode receive --port 8080 --device hw:0,0
-```
-
-**播放设备管理：**
-
-```bash
-# 列出可用播放设备
-xpuDevice --list-all
-
-# 输出:
-{
-  "local_devices": [
-    {
-      "id": "hw:0,0",
-      "name": "Built-in Audio",
-      "type": "local",
-      "sample_rates": [44100, 48000, 96000],
-      "status": "available"
-    }
-  ],
-  "remote_players": [
-    {
-      "id": "living-room-speaker",
-      "name": "Living Room Speaker",
-      "host": "192.168.1.200",
-      "port": 8080,
-      "type": "remote",
-      "hardware": "Raspberry Pi 4 + DAC",
-      "status": "idle",
-      "latency_ms": 15
-    },
-    {
-      "id": "bedroom-speaker",
-      "name": "Bedroom Speaker",
-      "host": "192.168.1.201",
-      "port": 8080,
-      "type": "remote",
-      "hardware": "NVIDIA Jetson Nano",
-      "status": "playing",
-      "current_track": "Bohemian Rhapsody"
-    }
-  ]
-}
-
-# 切换播放设备
-xpuPlay --device living-room-speaker
-```
-
-#### 2.9.7 配置文件
-
-**全局配置：**
-
-```toml
-# xpuSetting.conf
-
-[remote_execution]
-# 是否启用远程 GPU 服务
-enabled = true
-
-# 自动发现 GPU 服务器
-auto_discover = true
-
-# 默认远程服务器
-default_server = "gpu-server.example.com:8080"
-
-# 自动选择服务器（基于负载）
-auto_select = true
-
-# 连接超时（秒）
-connect_timeout = 5
-
-# 数据传输超时（秒）
-transfer_timeout = 60
-
-[presets]
-# 预定义的远程服务器配置
-high_performance = {
-    server = "gpu-server-001:8080",
-    backend = "cuda",
-    device = 0,
-    priority = 1
-}
-
-low_latency = {
-    server = "mac-studio:8080",
-    backend = "metal",
-    priority = 2
-}
-
-[playback]
-# 默认播放设备
-default_device = "auto"  # auto, local, 或指定设备 ID
-
-# 远程播放缓冲区（毫秒）
-remote_buffer_ms = 200
-```
-
-#### 2.9.8 网络传输优化
-
-**编解码选择：**
-
-```bash
-# 无损 WAV（最简单，但带宽大）
-xpuStream --target raspberry-pi --codec wav
-
-# FLAC 压缩（节省带宽，推荐）
-xpuStream --target raspberry-pi --codec flac --compression 5
-
-# Opus 有损（低带宽场景）
-xpuStream --target raspberry-pi --codec opus --bitrate 256
-```
-
-**性能对比：**
-
-| 编解码 | 压缩比 | 带宽 (96kHz/24-bit) | CPU 开销 | 延迟 |
-|--------|--------|---------------------|----------|------|
-| WAV | 1:1 | 4.6 Mbps | 极低 | 最低 |
-| FLAC | ~2:1 | 2.3 Mbps | 低 | 低 |
-| Opus | ~10:1 | 0.5 Mbps | 中 | 中 |
-
-#### 2.9.9 错误处理
-
-**网络错误处理：**
-
-```bash
-# 场景：GPU 服务器不可达
-
-# 自动重试
-xpuFingerprint --remote gpu-server --auto-retry --max-retries 3
-
-# 自动降级到本地
-xpuFingerprint --remote gpu-server --fallback local
-
-# 输出警告:
-{
-  "warning": "GPU server unreachable, falling back to local CPU",
-  "server": "gpu-server.example.com:8080",
-  "error": "Connection refused",
-  "fallback_mode": "local",
-  "performance_impact": "Processing will be 50x slower"
-}
-```
-
-**播放设备断连：**
-
-```bash
-# 场景：远程播放设备断开
-
-# 自动重连
-xpuPlay --device living-room-speaker --auto-reconnect --reconnect-delay 5
-
-# 切换到备用设备
-xpuPlay --device living-room-speaker --fallback bedroom-speaker
-
-# 输出:
-{
-  "event": "device_disconnected",
-  "device": "living-room-speaker",
-  "action": "reconnecting",
-  "fallback_device": "bedroom-speaker"
-}
-```
-
-#### 2.9.10 典型使用场景
-
-**场景 1：本地开发**
-
-```bash
-# 所有模块在本地运行
-xpuLoad song.flac | xpuIn2Wav | xpuProcess --eq rock | xpuPlay
-```
-
-**场景 2：利用远程 GPU 处理**
-
-```bash
-# 复杂 DSP 效果在 GPU 服务器处理，本地播放
-xpuLoad song.flac | xpuIn2Wav | \
-    xpuProcess --remote gpu-server \
-        --reverb hall --decay 2.5 \
-        --tube EL34 --drive 0.7 | \
-    xpuPlay --local
-```
-
-**场景 3：远程播放到边缘设备**
-
-```bash
-# 本地处理，远程播放
-xpuLoad song.flac | xpuIn2Wav | \
-    xpuProcess --eq jazz | \
-    xpuStream --target living-room-speaker
-```
-
-**场景 4：完整分布式管道**
-
-```bash
-# 本地加载 → 远程 GPU 处理 → 远程播放
-xpuLoad song.flac | xpuIn2Wav | \
-    xpuFingerprint --remote gpu-server | \
-    xpuProcess --remote gpu-server --reverb hall | \
-    xpuStream --target living-room-speaker --codec flac
 ```
 
 ## 3. CLI 模块设计
@@ -5810,7 +4259,12 @@ private:
     std::unique_ptr<RestApiServer> api_server_;
     std::unique_ptr<AgentProtocolServer> agent_server_;
 
-    // 编排层（直接处理 MCP 调用）
+    // 语义层
+    std::unique_ptr<IntentRecognizer> intent_recognizer_;
+    std::unique_ptr<ParameterNormalizer> param_normalizer_;
+    std::unique_ptr<ResponseFormatter> response_formatter_;
+
+    // 编排层
     std::unique_ptr<Orchestrator> orchestrator_;
 
     // 状态管理
@@ -6406,13 +4860,9 @@ GET /api/cache/lookup?file=/home/user/Music/song.flac&type=fft
 // Orchestrator在编排前查询缓存
 class Orchestrator {
 public:
-    // MCP工具调用入口（由Claude Skills调用）
-    json execute(const MCPRequest& request) {
-        // MCP请求格式：{"tool": "xpu_play", "params": {"file": "..."}}
-        const std::string& tool = request.tool;
-
-        if (tool == "xpu_play" || tool == "xpu_queue_add") {
-            std::string file = request.params["file"];
+    json execute(const SemanticRequest& request) {
+        if (request.intent == Intent::Play) {
+            std::string file = request.parameters["file"];
 
             // 查询FFT缓存
             auto fft_cache = cache_manager_->lookupCache(file, CacheType::FFT);
@@ -6502,13 +4952,124 @@ if ! xpuDaemon status >/dev/null 2>&1; then
 fi
 ```
 
+### 4.3 统一语义层
+
+#### 4.3.1 意图识别
+
+```cpp
+enum class Intent {
+    // 播放控制
+    Play,
+    Pause,
+    Resume,
+    Stop,
+    Seek,
+    Next,
+    Previous,
+
+    // 队列管理
+    QueueAdd,
+    QueueRemove,
+    QueueClear,
+    QueueList,
+    QueueShuffle,
+
+    // 音量控制
+    VolumeSet,
+    VolumeUp,
+    VolumeDown,
+    Mute,
+    Unmute,
+
+    // 信息查询
+    GetStatus,
+    GetMetadata,
+    GetQueue,
+    GetDevices,
+
+    // 设备管理
+    DeviceSet,
+    DeviceList,
+    DeviceTest,
+
+    // 搜索
+    Search,
+    Find
+};
+
+struct SemanticRequest {
+    Intent intent;
+    std::map<std::string, std::string> parameters;  // 规范化后的参数
+    std::string original_query;                     // 原始查询（用于调试）
+    std::string context;                            // 上下文信息
+};
+```
+
+#### 4.3.2 参数规范化
+
+```cpp
+class ParameterNormalizer {
+public:
+    // 规范化时间表达
+    std::optional<double> normalizeTime(const std::string& expr);
+
+    // 规范化音量
+    std::optional<float> normalizeVolume(const std::string& expr);
+
+    // 规范化文件路径
+    std::optional<std::string> normalizePath(const std::string& expr);
+
+    // 规范化设备
+    std::optional<std::string> normalizeDevice(const std::string& expr);
+
+private:
+    // "1:30" -> 90.0 秒
+    // "90 seconds" -> 90.0 秒
+    // "50%" -> 0.5
+    // "~/Music" -> "/home/user/Music"
+};
+```
+
+**示例：**
+
+```cpp
+// 输入参数规范化
+{
+    "time": "1:30",        // → 90.0 (秒)
+    "volume": "80%",       // → 0.8
+    "file": "~/Music/song.flac",  // → "/home/user/Music/song.flac"
+    "device": "speaker",   // → "alsa_output.pci-0000_00_1f.3.analog-stereo"
+    "sample_rate": "192k", // → 192000 (Hz)
+    "bit_depth": "32"      // → 32 (bit)
+}
+```
+
+#### 4.3.3 结果格式化
+
+```cpp
+class ResponseFormatter {
+public:
+    // 为不同客户端格式化响应
+    json formatForMCP(const json& result);
+    json formatForAPI(const json& result);
+    json formatForAgent(const json& result);
+
+    // 人类友好的描述
+    std::string describe(const json& result);
+
+private:
+    // 生成自然语言描述
+    std::string generateDescription(const json& result);
+};
+```
+
 ### 4.4 模块编排引擎
 
 ```cpp
 class Orchestrator {
 public:
-    // 执行 MCP 请求（由 Claude Skills 调用）
-    json execute(const MCPRequest& request);
+    // 执行语义请求
+    json execute(const SemanticRequest& request);
 
     // 构建管道
     Pipe buildPipeline(const std::vector<std::string>& modules);
@@ -6529,14 +5090,15 @@ private:
 **编排示例：**
 
 ```cpp
-// Claude Skills 通过 MCP 调用:
-// xpu_play {"file": "/home/user/Music/song.flac", "volume": "0.8", "eq": "rock"}
-MCPRequest req{
-    .tool = "xpu_play",
+// 语义请求: "播放 ~/Music/song.flac，音量80%，使用摇滚均衡器，输出为192kHz/32-bit"
+SemanticRequest req{
+    .intent = Intent::Play,
     .parameters = {
         {"file", "/home/user/Music/song.flac"},
         {"volume", "0.8"},
-        {"eq", "rock"}
+        {"eq", "rock"},
+        {"sample_rate", "192000"},
+        {"bit_depth", "32"}
     }
 };
 
@@ -6550,7 +5112,7 @@ Pipe pipe = orchestrator.buildPipeline({
 });
 
 // 等价于命令行：
-// xpuLoad file.flac | xpuIn2Wav | xpuProcess --volume 0.8 --eq rock | xpuOutWave --auto | xpuPlay
+// xpuLoad file.flac | xpuIn2Wav --rate 192000 --depth 32 | xpuProcess --volume 0.8 --eq rock | xpuOutWave --auto | xpuPlay
 
 // 执行并返回结果
 json result = orchestrator.executePipeline(pipe);
@@ -6559,30 +5121,35 @@ json result = orchestrator.executePipeline(pipe);
 **编排示例（带分析）：**
 
 ```cpp
-// Claude Skills 通过 MCP 调用:
-// xpu_meta_search {"filter": {"genre": "Rock"}} → xpu_queue_add → xpu_play
-
-// 1. 搜索音乐
-MCPRequest searchReq{
-    .tool = "xpu_meta_search",
-    .parameters = {{"filter", {{"genre", "Rock"}}}}
+// 语义请求: "分析并播放 ~/Music/song.flac，告诉我这是什么类型的音乐"
+SemanticRequest req{
+    .intent = Intent::Play,
+    .parameters = {
+        {"file", "/home/user/Music/song.flac"},
+        {"analyze", "true"},        // 启用分析
+        {"dimensions", "all"}       // 分析所有维度
+    }
 };
-json searchResult = orchestrator.execute(searchReq);
 
-// 2. 添加到队列
-std::string file = searchResult["results"][0]["file"];
-MCPRequest addReq{
-    .tool = "xpu_queue_add",
-    .parameters = {{"files", {file}}}
-};
-orchestrator.execute(addReq);
+// Daemon 编排完整管道（包含指纹、分类和可视化）
+Pipe pipe = orchestrator.buildPipeline({
+    "xpuLoad",         // 解析音频文件
+    "xpuIn2Wav",       // 重采样到目标格式
+    "xpuFingerprint",  // 生成音频指纹
+    "xpuClassify",     // 音乐分类（流派、情绪、活动）
+    "xpuVisualize",    // 生成可视化数据
+    "xpuProcess",      // DSP 处理
+    "xpuOutWave",      // 输出格式转换
+    "xpuPlay"          // 播放
+});
 
-// 3. 播放
-MCPRequest playReq{
-    .tool = "xpu_play",
-    .parameters = {}
-};
-orchestrator.execute(playReq);
+// 等价于命令行：
+// xpuLoad file.flac | xpuIn2Wav | xpuFingerprint | xpuClassify --dimension all | xpuVisualize | xpuProcess | xpuOutWave --auto | xpuPlay
+
+// 执行并返回结果（包含分类和可视化信息）
+json result = orchestrator.executePipeline(pipe);
+// result["classification"] 包含流派、情绪、活动等信息
+// result["visualization"] 包含缓存 ID 和路径
 ```
 
 ### 4.5 轻量任务队列
@@ -9551,4 +8118,4 @@ Claude Code → CLI 工具 (xpuLoad, xpuIn2Wav, ...) → 简单，可靠，无�
 
 ## 12. 许可证
 
-待定
+MIT License
