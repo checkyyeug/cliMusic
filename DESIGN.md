@@ -1,8 +1,252 @@
-# XPU AI-Ready 音乐播放系统 设计文档 v3.3
+# XPU AI-Ready 音乐播放系统 设计文档 v3.4
+
+> **版本说明**: v3.4 - 优化文档结构，添加导航和快速入门指南
+
+---
+
+## 📑 目录导航
+
+### 快速导航
+- [🚀 快速开始](#-快速开始) - 5分钟上手指南
+- [💡 核心概念](#-核心概念) - 关键设计理念
+- [🏗️ 系统架构](#-系统架构) - 架构概览
+- [📦 CLI 模块](#-cli-模块) - 核心模块说明
+- [🔌 API 接口](#-api-接口) - REST/MCP/WebSocket API
+- [📖 使用示例](#-使用示例) - 实际应用案例
+
+### 详细目录
+- [1. 项目概述](#1-项目概述)
+- [2. 系统架构](#2-系统架构)
+  - [2.1 Claude Skills 集成](#21-claude-skills-集成)
+  - [2.2 架构原则](#22-架构原则)
+  - [2.3 错误处理机制](#23-错误处理机制)
+  - [2.4 状态管理机制](#24-状态管理机制)
+  - [2.5 并发控制机制](#25-并发控制机制)
+  - [2.6 模块编排生命周期管理](#26-模块编排生命周期管理)
+  - [2.7 多层接口设计](#27-多层接口设计)
+  - [2.8 MVP 范围定义](#28-mvp-范围定义)
+  - [2.9 分布式执行模式](#29-分布式执行模式)
+- [3. CLI 模块设计](#3-cli-模块设计)
+- [4. xpuDaemon 设计](#4-xpudaemon-设计)
+- [5. MCP 接口设计](#5-mcp-接口设计)
+- [6. REST API 设计](#6-rest-api-设计)
+- [7. Agent-to-Agent 协议](#7-agent-to-agent-协议)
+- [8. 使用示例](#8-使用示例)
+- [9. 部署](#9-部署)
+- [10. 实际应用案例](#10-实际应用案例claude-code-skills)
+
+---
+
+## 🚀 快速开始
+
+### 30秒了解 XPU
+
+**XPU** 是一款专为 AI 时代设计的模块化音乐播放系统，具有以下特点：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│           XPU = CLI 工具 + AI Agent 接口                │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  人类用户 ──命令行──> xpuPlay song.flac                 │
+│                                                         │
+│  Claude AI ──MCP──> xpuDaemon ──> CLI 模块编排         │
+│                                                         │
+│  核心设计: 一个程序只做一件事 (Unix 哲学)               │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 5分钟快速入门
+
+#### 1️⃣ 安装 (Linux/macOS)
+```bash
+# 克隆仓库
+git clone https://github.com/your-org/xpu.git
+cd xpu
+
+# 编译安装
+mkdir build && cd build
+cmake ..
+make -j$(nproc)
+sudo make install
+```
+
+#### 2️⃣ 基本使用
+
+**直接播放音乐：**
+```bash
+# 管道方式 (Unix 风格)
+xpuLoad ~/Music/song.flac | xpuIn2Wav | xpuPlay
+
+# 或者使用队列
+xpuQueue add ~/Music/*.flac
+xpuQueue play
+```
+
+**通过 Claude AI 控制：**
+```bash
+# 启动守护进程
+xpuDaemon --mcp --stdio
+
+# 在 Claude Code 中
+# "播放我昨天听的摇滚乐"
+# Claude 会自动调用相应的 MCP 工具
+```
+
+#### 3️⃣ 核心模块速览
+
+| 模块 | 功能 | 典型用法 |
+|------|------|----------|
+| `xpuLoad` | 解析音频文件 | `xpuLoad song.flac` |
+| `xpuIn2Wav` | 转换为 WAV | `xpuLoad a.flac \| xpuIn2Wav` |
+| `xpuPlay` | 播放音频 | `xpuPlay` 或 `xpuPlay --device hdmi` |
+| `xpuQueue` | 队列管理 | `xpuQueue add *.flac` |
+| `xpuProcess` | DSP 处理 | `xpuProcess --eq rock --volume 0.8` |
+| `xpuDaemon` | 守护进程 | `xpuDaemon --mcp --stdio` |
+
+---
+
+## 💡 核心概念
+
+### 设计原则
+
+1. **CLI-First**: 每个模块都可独立运行
+2. **AI-Ready**: 通过 MCP 暴露所有功能给 AI
+3. **语义外置**: AI 理解意图，XPU 专注执行
+4. **完全模块化**: Unix 哲学，可组合使用
+
+### 架构层次
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    AI 客户端层                           │
+│         Claude Skills / GPT-4 / Web UI                  │
+└────────────────────┬────────────────────────────────────┘
+                     │ MCP / REST API
+┌────────────────────▼────────────────────────────────────┐
+│                  xpuDaemon (守护进程)                    │
+│              MCP Server + REST API + 编排引擎           │
+└────────────────────┬────────────────────────────────────┘
+                     │ CLI 调用
+┌────────────────────▼────────────────────────────────────┐
+│                   CLI 模块层                            │
+│    xpuLoad → xpuIn2Wav → xpuProcess → xpuPlay          │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📋 快速参考卡
+
+### 常用命令速查
+
+#### 播放控制
+```bash
+# 播放单个文件
+xpuLoad song.flac | xpuIn2Wav | xpuPlay
+
+# 使用队列
+xpuQueue add ~/Music/*.flac
+xpuQueue play
+xpuQueue next
+xpuQueue pause
+
+# 远程播放
+xpuStream --target ws://192.168.1.100:8080/stream
+```
+
+#### 音频处理
+```bash
+# 基础 EQ
+xpuLoad song.flac | xpuIn2Wav | xpuProcess --eq rock | xpuPlay
+
+# 音量控制
+xpuProcess --volume 0.8
+
+# 格式转换
+xpuLoad song.flac | xpuIn2Wav --output output.wav
+```
+
+#### AI 集成
+```bash
+# 启动 MCP 守护进程
+xpuDaemon --mcp --stdio
+
+# 在 Claude 中使用
+# "播放所有摇滚乐"
+# "把音量调到 80%"
+# "创建一个放松音乐的播放列表"
+```
+
+### 模块功能对照表
+
+| 模块 | 输入 | 输出 | 用途 |
+|------|------|------|------|
+| **xpuLoad** | 音频文件 | 元数据+流 | 解析音频 |
+| **xpuIn2Wav** | 任意格式 | WAV | 格式转换 |
+| **xpuProcess** | WAV | 处理后的 WAV | DSP 处理 |
+| **xpuPlay** | WAV | 音频输出 | 播放音频 |
+| **xpuQueue** | 命令 | 状态 | 队列管理 |
+| **xpuStream** | WAV | 网络流 | 远程传输 |
+| **xpuDaemon** | - | 多种接口 | 守护进程 |
+
+### 配置文件位置
+
+| 平台 | 配置文件 | 缓存目录 |
+|------|----------|----------|
+| Linux | `~/.config/xpu/config.yaml` | `~/.cache/xpu/` |
+| macOS | `~/Library/Application Support/xpu/` | `~/Library/Caches/xpu/` |
+| Windows | `%APPDATA%\xpu\config.yaml` | `%LOCALAPPDATA%\xpu\cache\` |
+
+### MCP 工具列表 (供 Claude 调用)
+
+**播放控制:**
+- `xpu_play` - 播放音乐
+- `xpu_pause` - 暂停
+- `xpu_resume` - 恢复
+- `xpu_stop` - 停止
+- `xpu_seek` - 跳转
+
+**队列管理:**
+- `xpu_queue_add` - 添加到队列
+- `xpu_queue_list` - 查看队列
+- `xpu_queue_clear` - 清空队列
+- `xpu_queue_next` - 下一首
+- `xpu_queue_previous` - 上一首
+
+**元数据:**
+- `xpu_meta_get` - 获取元数据
+- `xpu_meta_search` - 搜索音乐
+
+**音效:**
+- `xpu_process_volume` - 音量控制
+- `xpu_process_eq` - 均衡器
+
+---
 
 ## 1. 项目概述
 
 XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能模块都是独立的 CLI 工具，可以被人类直接使用，也可以通过 MCP (Model Context Protocol) 供 Claude Skills 等 AI Agent 调用。
+
+### 为什么选择 XPU？
+
+| 特性 | 说明 |
+|------|------|
+| 🎯 **CLI-First** | 每个模块都是独立的可执行文件，遵循 Unix 哲学 |
+| 🤖 **AI-Ready** | 原生支持 MCP 协议，可与 Claude/GPT-4 等 AI 无缝集成 |
+| 🧩 **完全模块化** | 一个程序只做一件事，可通过管道灵活组合 |
+| 🚀 **高性能** | C/C++ 实现，支持 768kHz 无损音频，极低延迟 |
+| 🌐 **分布式** | 支持服务器 + 边缘设备分离架构 |
+| 🛠️ **可扩展** | 支持 GPU 加速、远程执行、插件系统 |
+
+### 技术栈
+
+- **语言**: C/C++ (核心模块), Python (脚本工具)
+- **协议**: MCP, REST API, WebSocket, HTTP/TCP
+- **音频**: FLAC, WAV, ALAC, DSD (无损格式)
+- **平台**: Windows, macOS, Linux, ARM (树莓派)
+- **AI 集成**: Claude Skills, GPT-4, 自定义 Agent
 
 ### 核心特性
 
@@ -72,9 +316,56 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 2. 系统架构
+## 🏗️ 系统架构
 
-### 2.1 整体架构
+### 架构概览 (简化版)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    使用层                               │
+│    人类用户 (CLI)    │    Claude AI (MCP)    │   Web UI  │
+└─────────────────┬─────────────┬──────────────┬───────────┘
+                  │             │              │
+┌─────────────────▼─────────────▼──────────────▼───────────┐
+│              xpuDaemon (守护进程)                        │
+│    MCP Server + REST API + 模块编排引擎                  │
+└─────────────────┬────────────────────────────────────────┘
+                  │
+┌─────────────────▼────────────────────────────────────────┐
+│              CLI 模块层 (14个独立工具)                    │
+│                                                          │
+│  输入端              处理端              输出端           │
+│  ┌────────┐   ┌──────────────┐    ┌──────────┐        │
+│  │xpuLoad │──→│xpuIn2Wav     │──→ │ xpuPlay  │        │
+│  │xpuMeta │   │xpuProcess    │    │ xpuQueue │        │
+│  │xpuQueue│   │xpuFingerprint│    │ xpuStream│        │
+│  └────────┘   └──────────────┘    └──────────┘        │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 核心设计模式
+
+1. **管道模式 (Pipeline)**: Unix 风格的命令组合
+   ```bash
+   xpuLoad song.flac | xpuIn2Wav | xpuProcess --eq rock | xpuPlay
+   ```
+
+2. **守护进程模式 (Daemon)**: 统一的状态管理和 API 服务
+   ```bash
+   xpuDaemon --mcp --stdio  # 启动守护进程
+   ```
+
+3. **分布式模式 (Distributed)**: 支持远程 GPU 和边缘播放
+   ```bash
+   xpuFingerprint --remote gpu-server:8080 --backend cuda
+   ```
+
+<details>
+<summary><b>📖 查看详细架构图</b></summary>
+
+---
+
+### 2.1 整体架构 (详细版)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -150,6 +441,10 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+</details>
+
+---
 
 ### 2.1 Claude Skills 集成
 
