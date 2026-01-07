@@ -1,0 +1,465 @@
+openapi: 3.0.3
+info:
+  title: XPU REST API
+  version: 1.0.0
+  description: REST API for XPU Music Playback System
+
+servers:
+  - url: http://127.0.0.1:8080/api
+    description: Local development server
+
+paths:
+  /play:
+    post:
+      summary: Start playback
+      description: Begin audio playback of the current or specified track
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                file_path:
+                  type: string
+                  description: Absolute path to audio file (optional, uses current queue if not specified)
+                position:
+                  type: number
+                  description: Start position in seconds (optional)
+      responses:
+        '200':
+          description: Playback started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackState'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Track not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /pause:
+    post:
+      summary: Pause playback
+      description: Pause current audio playback
+      responses:
+        '200':
+          description: Playback paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackState'
+        '400':
+          description: Nothing playing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /resume:
+    post:
+      summary: Resume playback
+      description: Resume paused playback
+      responses:
+        '200':
+          description: Playback resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackState'
+
+  /stop:
+    post:
+      summary: Stop playback
+      description: Stop playback and reset position
+      responses:
+        '200':
+          description: Playback stopped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackState'
+
+  /seek:
+    post:
+      summary: Seek to position
+      description: Seek to a specific position in the current track
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - position
+              properties:
+                position:
+                  type: number
+                  description: Position in seconds
+      responses:
+        '200':
+          description: Position updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackState'
+        '400':
+          description: Invalid position
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /queue:
+    get:
+      summary: Get current queue
+      description: Retrieve the current playback queue
+      responses:
+        '200':
+          description: Queue retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Queue'
+        '404':
+          description: No queue exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      summary: Add track to queue
+      description: Add a track to the end of the queue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - file_path
+              properties:
+                file_path:
+                  type: string
+                  description: Absolute path to audio file
+                position:
+                  type: integer
+                  description: Insert at specific position (optional)
+      responses:
+        '200':
+          description: Track added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Queue'
+        '400':
+          description: Invalid file or queue full
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      summary: Clear queue
+      description: Remove all tracks from the queue
+      responses:
+        '200':
+          description: Queue cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Queue'
+
+  /queue/{index}:
+    delete:
+      summary: Remove track from queue
+      description: Remove a track at the specified index
+      parameters:
+        - name: index
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Track index to remove
+      responses:
+        '200':
+          description: Track removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Queue'
+        '404':
+          description: Index out of range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /queue/next:
+    post:
+      summary: Next track
+      description: Skip to the next track in the queue
+      responses:
+        '200':
+          description: Moved to next track
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackState'
+
+  /queue/previous:
+    post:
+      summary: Previous track
+      description: Go to the previous track in the queue
+      responses:
+        '200':
+          description: Moved to previous track
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackState'
+
+  /volume:
+    get:
+      summary: Get volume
+      description: Get current volume level
+      responses:
+        '200':
+          description: Volume retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  volume:
+                    type: number
+                    minimum: 0.0
+                    maximum: 1.0
+
+    put:
+      summary: Set volume
+      description: Set volume level
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - volume
+              properties:
+                volume:
+                  type: number
+                  minimum: 0.0
+                  maximum: 1.0
+                  description: Volume level (0.0 to 1.0)
+      responses:
+        '200':
+          description: Volume set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  volume:
+                    type: number
+
+  /eq:
+    get:
+      summary: Get EQ preset
+      description: Get current equalizer preset
+      responses:
+        '200':
+          description: EQ preset retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preset:
+                    type: string
+                    enum: [flat, rock, pop, classical, jazz]
+
+    put:
+      summary: Set EQ preset
+      description: Set equalizer preset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - preset
+              properties:
+                preset:
+                  type: string
+                  enum: [flat, rock, pop, classical, jazz]
+      responses:
+        '200':
+          description: EQ preset set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preset:
+                    type: string
+
+  /status:
+    get:
+      summary: Get playback status
+      description: Get current playback state
+      responses:
+        '200':
+          description: Status retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackState'
+
+  /track/metadata:
+    post:
+      summary: Get track metadata
+      description: Extract metadata from audio file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - file_path
+              properties:
+                file_path:
+                  type: string
+      responses:
+        '200':
+          description: Metadata retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Track'
+        '404':
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    Track:
+      type: object
+      required:
+        - track_id
+        - file_path
+        - duration
+        - codec
+        - sample_rate
+        - bit_depth
+        - channels
+      properties:
+        track_id:
+          type: string
+          format: uuid
+        file_path:
+          type: string
+        title:
+          type: string
+        artist:
+          type: string
+        album:
+          type: string
+        duration:
+          type: number
+        codec:
+          type: string
+          enum: [flac, wav]
+        sample_rate:
+          type: integer
+        bit_depth:
+          type: integer
+        channels:
+          type: integer
+        file_size:
+          type: integer
+        modified_time:
+          type: string
+          format: date-time
+
+    Queue:
+      type: object
+      required:
+        - queue_id
+        - tracks
+        - current_index
+      properties:
+        queue_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Track'
+        current_index:
+          type: integer
+          minimum: -1
+        shuffle_mode:
+          type: boolean
+        repeat_mode:
+          type: string
+          enum: [off, all, one]
+
+    PlaybackState:
+      type: object
+      required:
+        - state
+        - position
+        - volume
+        - eq_preset
+      properties:
+        state:
+          type: string
+          enum: [stopped, playing, paused]
+        current_track:
+          $ref: '#/components/schemas/Track'
+        position:
+          type: number
+        volume:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+        eq_preset:
+          type: string
+          enum: [flat, rock, pop, classical, jazz]
+        is_muted:
+          type: boolean
+        duration:
+          type: number
+        remaining:
+          type: number
+
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        details:
+          type: object

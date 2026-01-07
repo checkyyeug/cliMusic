@@ -31,7 +31,14 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+**验证项** (基于 `.specify/memory/constitution.md`):
+
+- [ ] **代码质量**: 模块设计是否符合单一职责原则? 圈复杂度是否可控?
+- [ ] **TDD**: 是否已定义测试策略? 关键路径是否有100%覆盖计划?
+- [ ] **性能**: 是否满足音频性能要求 (< 100ms延迟, < 500MB内存)?
+- [ ] **安全**: 外部输入验证是否已规划? 网络传输是否使用加密?
+
+**如违反任何原则，必须在"Complexity Tracking"部分说明理由**
 
 ## Project Structure
 
