@@ -1,0 +1,198 @@
+cmake_minimum_required(VERSION 3.15)
+project(xpu VERSION 0.1.0 LANGUAGES C CXX)
+
+# Set C++17 standard
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Platform-specific settings
+if(WIN32)
+    set(PLATFORM_WINDOWS TRUE)
+    add_definitions(-DPLATFORM_WINDOWS)
+elseif(APPLE)
+    set(PLATFORM_MACOS TRUE)
+    add_definitions(-DPLATFORM_MACOS)
+else()
+    set(PLATFORM_LINUX TRUE)
+    add_definitions(-DPLATFORM_LINUX)
+endif()
+
+# Output directories
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+# Find required packages
+if(UNIX)
+    find_package(PkgConfig REQUIRED)
+
+    # FFmpeg
+    pkg_check_modules(FFMPEG REQUIRED
+        libavformat
+        libavcodec
+        libavutil
+        libswresample
+    )
+
+    # FFTW3
+    pkg_check_modules(FFTW3 REQUIRED fftw3)
+
+    # libsamplerate
+    pkg_check_modules(SAMPLERATE REQUIRED samplerate)
+elseif(WIN32)
+    # Windows: Use vcpkg or manual paths
+    # For now, set to empty and let user specify via CMAKE_PREFIX_PATH
+    set(FFMPEG_INCLUDE_DIRS "" CACHE PATH "FFmpeg include directory")
+    set(FFMPEG_LIBRARIES "" CACHE STRING "FFmpeg libraries")
+    set(FFTW3_INCLUDE_DIRS "" CACHE PATH "FFTW3 include directory")
+    set(FFTW3_LIBRARIES "" CACHE STRING "FFTW3 libraries")
+    set(SAMPLERATE_INCLUDE_DIRS "" CACHE PATH "libsamplerate include directory")
+    set(SAMPLERATE_LIBRARIES "" CACHE STRING "libsamplerate libraries")
+
+    # Add warnings about dependencies
+    message(WARNING "Windows build: Please ensure FFmpeg, FFTW3, and libsamplerate are available")
+    message(WARNING "Set CMAKE_PREFIX_PATH to vcpkg installed directory or manually set *_INCLUDE_DIRS and *_LIBRARIES")
+endif()
+
+# PortAudio
+find_package(PortAudio QUIET)
+if(NOT PortAudio_FOUND)
+    # For Windows, allow manual specification
+    if(WIN32)
+        set(PORTAUDIO_INCLUDE_DIRS "" CACHE PATH "PortAudio include directory")
+        set(PORTAUDIO_LIBRARIES "" CACHE STRING "PortAudio libraries")
+        message(WARNING "PortAudio not found. Please set PORTAUDIO_INCLUDE_DIRS and PORTAUDIO_LIBRARIES")
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(PORTAUDIO REQUIRED portaudio-2.0)
+    endif()
+endif()
+
+# Threads
+find_package(Threads REQUIRED)
+
+# Optional: spdlog (use FetchContent if not found)
+find_package(spdlog 1.8 QUIET)
+if(NOT spdlog_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.12.0
+    )
+    FetchContent_MakeAvailable(spdlog)
+endif()
+
+# Optional: nlohmann/json (use FetchContent if not found)
+# Note: Using header-only version to avoid CMake version conflicts
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    include(FetchContent)
+    FetchContent_Declare(
+        json
+        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+        URL_HASH SHA256=d69f9deb6a75e508d0e70b0f4f6bde01b1abb9b000ec65e4491e26610ff24fc6
+    )
+    # For header-only, we just need to include the directory
+    FetchContent_MakeAvailable(json)
+    # Create interface target if not created
+    if(NOT TARGET nlohmann_json::nlohmann_json)
+        add_library(nlohmann_json::nlohmann_json INTERFACE IMPORTED)
+        set_target_properties(nlohmann_json::nlohmann_json PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${json_SOURCE_DIR}/include"
+        )
+    endif()
+endif()
+
+# Optional: GoogleTest (for testing)
+find_package(GTest QUIET)
+if(BUILD_TESTING AND NOT GTest_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG release-1.12.1
+    )
+    FetchContent_MakeAvailable(googletest)
+endif()
+
+# Include directories
+include_directories(
+    ${CMAKE_SOURCE_DIR}/src/lib
+    ${CMAKE_SOURCE_DIR}/src/lib/protocol
+    ${CMAKE_SOURCE_DIR}/src/lib/utils
+    ${CMAKE_SOURCE_DIR}/src/lib/audio
+    ${CMAKE_SOURCE_DIR}/src/lib/interfaces
+)
+
+if(FFMPEG_INCLUDE_DIRS)
+    include_directories(${FFMPEG_INCLUDE_DIRS})
+endif()
+if(PORTAUDIO_INCLUDE_DIRS)
+    include_directories(${PORTAUDIO_INCLUDE_DIRS})
+endif()
+if(FFTW3_INCLUDE_DIRS)
+    include_directories(${FFTW3_INCLUDE_DIRS})
+endif()
+if(SAMPLERATE_INCLUDE_DIRS)
+    include_directories(${SAMPLERATE_INCLUDE_DIRS})
+endif()
+
+# Compiler flags
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wall -Wextra -Wpedantic)
+    if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
+        add_compile_options(-O3 -march=native)
+    endif()
+elseif(MSVC)
+    add_compile_options(/W4)
+    if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
+        add_compile_options(/O2)
+    endif()
+endif()
+
+# Subdirectories
+add_subdirectory(src/lib)
+
+# Core modules
+add_subdirectory(src/xpuLoad)
+add_subdirectory(src/xpuIn2Wav)
+add_subdirectory(src/xpuPlay)
+add_subdirectory(src/xpuQueue)
+add_subdirectory(src/xpuProcess)
+add_subdirectory(src/xpuDaemon)
+
+# Tests
+option(BUILD_TESTING "Build tests" ON)
+if(BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# Installation
+install(DIRECTORY configs/
+    DESTINATION etc/xpu
+    FILES_MATCHING PATTERN "*.conf"
+)
+
+install(DIRECTORY scripts/
+    DESTINATION share/xpu/scripts
+    FILE_PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+)
+
+# Print configuration summary
+message(STATUS "")
+message(STATUS "XPU Configuration Summary:")
+message(STATUS "  Version: ${xpu_VERSION}")
+message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "  Platform: ${CMAKE_SYSTEM_NAME}")
+if(PLATFORM_WINDOWS)
+    message(STATUS "  Audio backend: WASAPI")
+elseif(PLATFORM_MACOS)
+    message(STATUS "  Audio backend: CoreAudio")
+else()
+    message(STATUS "  Audio backend: ALSA")
+endif()
+message(STATUS "  Build tests: ${BUILD_TESTING}")
+message(STATUS "")

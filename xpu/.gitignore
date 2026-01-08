@@ -1,0 +1,88 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Compiled Object files
+*.o
+*.obj
+*.ko
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.a
+*.lib
+*.la
+*.lo
+
+# Executables
+*.exe
+*.out
+*.app
+*xpuLoad
+*xpuIn2Wav
+*xpuPlay
+*xpuQueue
+*xpuProcess
+*xpuDaemon
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# FFT Cache files
+*.cache/
+cache/
+
+# Configuration (user-specific)
+*.local.conf
+
+# Test outputs
+Testing/
+tests/output/
+
+# Dependencies
+vendor/
+external/
+
+# Backup files
+*.bak
+*.backup
+*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+venv/
+env/
+
+# Temporary files
+tmp/
+temp/

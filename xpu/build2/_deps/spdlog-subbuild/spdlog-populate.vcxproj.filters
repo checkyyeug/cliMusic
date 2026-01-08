@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\401e29a6e3e729127cf41f4a29a91e7e\spdlog-populate-mkdir.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\401e29a6e3e729127cf41f4a29a91e7e\spdlog-populate-download.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\401e29a6e3e729127cf41f4a29a91e7e\spdlog-populate-update.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\401e29a6e3e729127cf41f4a29a91e7e\spdlog-populate-patch.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\401e29a6e3e729127cf41f4a29a91e7e\spdlog-populate-configure.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\401e29a6e3e729127cf41f4a29a91e7e\spdlog-populate-build.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\401e29a6e3e729127cf41f4a29a91e7e\spdlog-populate-install.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\401e29a6e3e729127cf41f4a29a91e7e\spdlog-populate-test.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\847efa7dc1410a06f55cecc19c593de0\spdlog-populate-complete.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\b1b2f134ecc24f6565402c5281c09091\spdlog-populate.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\workspace\cliMusic\xpu\build2\_deps\spdlog-subbuild\CMakeFiles\spdlog-populate" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{51BFBAC4-A682-3BBC-963D-4C79A0C3DEE3}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

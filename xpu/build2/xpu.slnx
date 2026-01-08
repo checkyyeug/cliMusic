@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+	<Configurations>
+		<BuildType Name="Debug"/>
+		<BuildType Name="Release"/>
+		<BuildType Name="MinSizeRel"/>
+		<BuildType Name="RelWithDebInfo"/>
+		<Platform Name="x64"/>
+	</Configurations>
+	<Project Path="ALL_BUILD.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="4cf6031e-e785-3f6b-b688-eee909bb810c" DefaultStartup="true">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/googletest-build/googletest/gtest.vcxproj"/>
+		<BuildDependency Project="_deps/googletest-build/googletest/gtest_main.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+		<BuildDependency Project="tests/unit/test_AudioWrappers.vcxproj"/>
+		<BuildDependency Project="tests/unit/test_Protocol.vcxproj"/>
+		<BuildDependency Project="src/lib/xpu.vcxproj"/>
+		<BuildDependency Project="src/xpuDaemon/xpuDaemon.vcxproj"/>
+		<BuildDependency Project="src/xpuIn2Wav/xpuIn2Wav.vcxproj"/>
+		<BuildDependency Project="src/xpuLoad/xpuLoad.vcxproj"/>
+		<BuildDependency Project="src/xpuPlay/xpuPlay.vcxproj"/>
+		<BuildDependency Project="src/xpuProcess/xpuProcess.vcxproj"/>
+		<BuildDependency Project="src/xpuQueue/xpuQueue.vcxproj"/>
+	</Project>
+	<Project Path="INSTALL.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="9f0f088d-a597-3a70-9e38-18227be13924">
+		<BuildDependency Project="ALL_BUILD.vcxproj"/>
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="RUN_TESTS.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="fba3f7fe-9625-356a-83ce-f1c0185ffde9">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="ZERO_CHECK.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="176b6939-ec47-3f10-b2f7-b118f5a00718"/>
+	<Project Path="_deps/googletest-build/googletest/gtest.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="5612fae9-7653-320f-9386-da12e74ffa2f">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="_deps/googletest-build/googletest/gtest_main.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="bf8006e6-156e-3128-a8c0-8c9c73abf846">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/googletest-build/googletest/gtest.vcxproj"/>
+	</Project>
+	<Project Path="tests/run_comprehensive_tests.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="46ed22d8-f0e4-31f5-8c53-ebb2add8176b">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="tests/unit/test_AudioWrappers.vcxproj"/>
+		<BuildDependency Project="tests/unit/test_Protocol.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="_deps/spdlog-build/spdlog.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="93b4512b-70a9-3ad3-8fa7-19fdd3be9a1a">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="tests/unit/test_AudioWrappers.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="bb40efe8-9888-353a-87e8-9b1dc59f5436">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/googletest-build/googletest/gtest.vcxproj"/>
+		<BuildDependency Project="_deps/googletest-build/googletest/gtest_main.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+		<BuildDependency Project="src/lib/xpu.vcxproj"/>
+	</Project>
+	<Project Path="tests/unit/test_Protocol.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="9939432f-3369-3838-9cec-36981c504757">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/googletest-build/googletest/gtest.vcxproj"/>
+		<BuildDependency Project="_deps/googletest-build/googletest/gtest_main.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+		<BuildDependency Project="src/lib/xpu.vcxproj"/>
+	</Project>
+	<Project Path="tests/test_all.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="fd9702f4-47a5-3be2-a946-38077aa6b1a9">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/xpuDaemon/xpuDaemon.vcxproj"/>
+		<BuildDependency Project="src/xpuIn2Wav/xpuIn2Wav.vcxproj"/>
+		<BuildDependency Project="src/xpuLoad/xpuLoad.vcxproj"/>
+		<BuildDependency Project="src/xpuPlay/xpuPlay.vcxproj"/>
+		<BuildDependency Project="src/xpuProcess/xpuProcess.vcxproj"/>
+		<BuildDependency Project="src/xpuQueue/xpuQueue.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="tests/test_benchmark.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="23aaca89-dcc1-39f0-9529-f318a39de466">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/xpuDaemon/xpuDaemon.vcxproj"/>
+		<BuildDependency Project="src/xpuIn2Wav/xpuIn2Wav.vcxproj"/>
+		<BuildDependency Project="src/xpuLoad/xpuLoad.vcxproj"/>
+		<BuildDependency Project="src/xpuPlay/xpuPlay.vcxproj"/>
+		<BuildDependency Project="src/xpuProcess/xpuProcess.vcxproj"/>
+		<BuildDependency Project="src/xpuQueue/xpuQueue.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="tests/test_contract.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="2c855ae0-08eb-3b77-a8c3-346290acecf3">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/xpuDaemon/xpuDaemon.vcxproj"/>
+		<BuildDependency Project="src/xpuIn2Wav/xpuIn2Wav.vcxproj"/>
+		<BuildDependency Project="src/xpuLoad/xpuLoad.vcxproj"/>
+		<BuildDependency Project="src/xpuPlay/xpuPlay.vcxproj"/>
+		<BuildDependency Project="src/xpuProcess/xpuProcess.vcxproj"/>
+		<BuildDependency Project="src/xpuQueue/xpuQueue.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="tests/test_crossplatform.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="58c216ee-006b-30b9-a9ce-12b6778e58f5">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/xpuDaemon/xpuDaemon.vcxproj"/>
+		<BuildDependency Project="src/xpuIn2Wav/xpuIn2Wav.vcxproj"/>
+		<BuildDependency Project="src/xpuLoad/xpuLoad.vcxproj"/>
+		<BuildDependency Project="src/xpuPlay/xpuPlay.vcxproj"/>
+		<BuildDependency Project="src/xpuProcess/xpuProcess.vcxproj"/>
+		<BuildDependency Project="src/xpuQueue/xpuQueue.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="tests/test_error.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="bdf88817-a1b5-3775-b39d-99e353e25b63">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/xpuDaemon/xpuDaemon.vcxproj"/>
+		<BuildDependency Project="src/xpuIn2Wav/xpuIn2Wav.vcxproj"/>
+		<BuildDependency Project="src/xpuLoad/xpuLoad.vcxproj"/>
+		<BuildDependency Project="src/xpuPlay/xpuPlay.vcxproj"/>
+		<BuildDependency Project="src/xpuProcess/xpuProcess.vcxproj"/>
+		<BuildDependency Project="src/xpuQueue/xpuQueue.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="tests/test_integration.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="148f6135-59b3-38af-8cfd-2d58a3b20bf4">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/xpuDaemon/xpuDaemon.vcxproj"/>
+		<BuildDependency Project="src/xpuIn2Wav/xpuIn2Wav.vcxproj"/>
+		<BuildDependency Project="src/xpuLoad/xpuLoad.vcxproj"/>
+		<BuildDependency Project="src/xpuPlay/xpuPlay.vcxproj"/>
+		<BuildDependency Project="src/xpuProcess/xpuProcess.vcxproj"/>
+		<BuildDependency Project="src/xpuQueue/xpuQueue.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="tests/test_performance.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="9d08b894-174a-3789-b647-a2695c22e501">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/xpuDaemon/xpuDaemon.vcxproj"/>
+		<BuildDependency Project="src/xpuIn2Wav/xpuIn2Wav.vcxproj"/>
+		<BuildDependency Project="src/xpuLoad/xpuLoad.vcxproj"/>
+		<BuildDependency Project="src/xpuPlay/xpuPlay.vcxproj"/>
+		<BuildDependency Project="src/xpuProcess/xpuProcess.vcxproj"/>
+		<BuildDependency Project="src/xpuQueue/xpuQueue.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="tests/test_units.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="6a0b79b5-1696-36b9-8a5a-cfdd3a76bb85">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/xpuDaemon/xpuDaemon.vcxproj"/>
+		<BuildDependency Project="src/xpuIn2Wav/xpuIn2Wav.vcxproj"/>
+		<BuildDependency Project="src/xpuLoad/xpuLoad.vcxproj"/>
+		<BuildDependency Project="src/xpuPlay/xpuPlay.vcxproj"/>
+		<BuildDependency Project="src/xpuProcess/xpuProcess.vcxproj"/>
+		<BuildDependency Project="src/xpuQueue/xpuQueue.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="src/lib/xpu.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="bd8c1bb6-f9ee-3c9c-8f1a-a18fb6eeac50">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+	</Project>
+	<Project Path="src/xpuDaemon/xpuDaemon.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="3571e423-d202-3e60-8642-363834c4a48e">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+		<BuildDependency Project="src/lib/xpu.vcxproj"/>
+	</Project>
+	<Project Path="src/xpuIn2Wav/xpuIn2Wav.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="013d5fc5-6c9c-339f-b8ef-953f74e09418">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+		<BuildDependency Project="src/lib/xpu.vcxproj"/>
+	</Project>
+	<Project Path="src/xpuLoad/xpuLoad.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="ed9d81e8-6713-3091-9fbf-b646058f3b4d">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+		<BuildDependency Project="src/lib/xpu.vcxproj"/>
+	</Project>
+	<Project Path="src/xpuPlay/xpuPlay.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="0ede70af-c6cc-3544-87bf-b02437c4f047">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+		<BuildDependency Project="src/lib/xpu.vcxproj"/>
+	</Project>
+	<Project Path="src/xpuProcess/xpuProcess.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="0cacb9b7-0904-341d-9876-94bd2598fe36">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+		<BuildDependency Project="src/lib/xpu.vcxproj"/>
+	</Project>
+	<Project Path="src/xpuQueue/xpuQueue.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="e1ec256e-27e2-3d17-99aa-cb42f6f42d73">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/spdlog-build/spdlog.vcxproj"/>
+		<BuildDependency Project="src/lib/xpu.vcxproj"/>
+	</Project>
+</Solution>

@@ -1,0 +1,764 @@
+/**
+ * @file test_QueueManager.cpp
+ * @brief Comprehensive unit tests for QueueManager
+ */
+
+#include <gtest/gtest.h>
+#include "../../src/xpuQueue/QueueManager.h"
+#include <algorithm>
+#include <random>
+
+using namespace xpu;
+
+class QueueManagerTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        queue_mgr = std::make_unique<queue::QueueManager>();
+        ErrorCode ret = queue_mgr->initialize();
+        ASSERT_EQ(ret, ErrorCode::Success);
+    }
+
+    void TearDown() override {
+        queue_mgr->clearQueue();
+        queue_mgr.reset();
+    }
+
+    std::unique_ptr<queue::QueueManager> queue_mgr;
+
+    protocol::AudioMetadata createTestMetadata(const std::string& title, int duration = 180) {
+        protocol::AudioMetadata metadata;
+        metadata.title = title;
+        metadata.artist = "Test Artist";
+        metadata.album = "Test Album";
+        metadata.duration = duration;
+        metadata.sample_rate = 48000;
+        metadata.channels = 2;
+        metadata.bit_depth = 24;
+        return metadata;
+    }
+};
+
+// Initialization Tests
+
+TEST_F(QueueManagerTest, Initialize) {
+    EXPECT_NE(queue_mgr, nullptr);
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 0);
+    EXPECT_EQ(state.current_index, 0);
+    EXPECT_EQ(state.mode, queue::PlaybackMode::Sequential);
+}
+
+TEST_F(QueueManagerTest, InitializeMultipleTimes) {
+    ErrorCode ret = queue_mgr->initialize();
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+// Add Track Tests
+
+TEST_F(QueueManagerTest, AddTrack) {
+    auto metadata = createTestMetadata("Track 1");
+    ErrorCode ret = queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 1);
+    EXPECT_EQ(state.entries[0].file_path, "/path/to/track1.flac");
+    EXPECT_EQ(state.entries[0].position, 0);
+}
+
+TEST_F(QueueManagerTest, AddMultipleTracks) {
+    for (int i = 1; i <= 3; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 3);
+
+    // Check positions
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(state.entries[i].position, i);
+    }
+}
+
+TEST_F(QueueManagerTest, AddManyTracks) {
+    const int track_count = 100;
+    for (int i = 0; i < track_count; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), track_count);
+}
+
+TEST_F(QueueManagerTest, AddTrackWithEmptyPath) {
+    auto metadata = createTestMetadata("Track 1");
+    ErrorCode ret = queue_mgr->addTrack("", metadata);
+
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, AddTrackPreservesMetadata) {
+    auto metadata = createTestMetadata("Test Title", 240);
+    metadata.artist = "Test Artist";
+    metadata.album = "Test Album";
+    metadata.year = "2024";
+    metadata.genre = "Test Genre";
+    metadata.track_number = 5;
+
+    ErrorCode ret = queue_mgr->addTrack("/path/to/track.flac", metadata);
+    ASSERT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries[0].metadata.title, "Test Title");
+    EXPECT_EQ(state.entries[0].metadata.artist, "Test Artist");
+    EXPECT_EQ(state.entries[0].metadata.album, "Test Album");
+    EXPECT_EQ(state.entries[0].metadata.duration, 240);
+}
+
+// Remove Track Tests
+
+TEST_F(QueueManagerTest, RemoveTrack) {
+    auto metadata1 = createTestMetadata("Track 1");
+    auto metadata2 = createTestMetadata("Track 2");
+
+    queue_mgr->addTrack("/path/to/track1.flac", metadata1);
+    queue_mgr->addTrack("/path/to/track2.flac", metadata2);
+
+    ErrorCode ret = queue_mgr->removeTrack(0);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 1);
+    EXPECT_EQ(state.entries[0].file_path, "/path/to/track2.flac");
+    EXPECT_EQ(state.entries[0].position, 0);  // Position updated
+}
+
+TEST_F(QueueManagerTest, RemoveTrackFromMiddle) {
+    for (int i = 1; i <= 5; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    ErrorCode ret = queue_mgr->removeTrack(2);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 4);
+    EXPECT_EQ(state.entries[2].file_path, "/path/to/track4.flac");
+}
+
+TEST_F(QueueManagerTest, RemoveLastTrack) {
+    for (int i = 1; i <= 3; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    ErrorCode ret = queue_mgr->removeTrack(2);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 2);
+    EXPECT_EQ(state.entries[1].file_path, "/path/to/track2.flac");
+}
+
+TEST_F(QueueManagerTest, RemoveTrackInvalidIndex) {
+    auto metadata = createTestMetadata("Track 1");
+    queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    ErrorCode ret = queue_mgr->removeTrack(5);
+    EXPECT_NE(ret, ErrorCode::Success);
+
+    ret = queue_mgr->removeTrack(-1);
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, RemoveTrackFromEmptyQueue) {
+    ErrorCode ret = queue_mgr->removeTrack(0);
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, RemoveAllTracksOneByOne) {
+    for (int i = 1; i <= 3; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    while (queue_mgr->getQueueState().entries.size() > 0) {
+        ErrorCode ret = queue_mgr->removeTrack(0);
+        EXPECT_EQ(ret, ErrorCode::Success);
+    }
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 0);
+}
+
+// Clear Queue Tests
+
+TEST_F(QueueManagerTest, ClearQueue) {
+    auto metadata = createTestMetadata("Track 1");
+    queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    ErrorCode ret = queue_mgr->clearQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 0);
+    EXPECT_EQ(state.current_index, 0);
+}
+
+TEST_F(QueueManagerTest, ClearQueueMultipleTracks) {
+    for (int i = 1; i <= 10; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    ErrorCode ret = queue_mgr->clearQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 0);
+}
+
+TEST_F(QueueManagerTest, ClearEmptyQueue) {
+    ErrorCode ret = queue_mgr->clearQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, ClearQueueTwice) {
+    auto metadata = createTestMetadata("Track 1");
+    queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    queue_mgr->clearQueue();
+    ErrorCode ret = queue_mgr->clearQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+// Get Current Track Tests
+
+TEST_F(QueueManagerTest, GetCurrentTrack) {
+    auto metadata1 = createTestMetadata("Track 1");
+    auto metadata2 = createTestMetadata("Track 2");
+
+    queue_mgr->addTrack("/path/to/track1.flac", metadata1);
+    queue_mgr->addTrack("/path/to/track2.flac", metadata2);
+
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getCurrentTrack(entry);
+
+    EXPECT_EQ(ret, ErrorCode::Success);
+    EXPECT_EQ(entry.file_path, "/path/to/track1.flac");
+    EXPECT_EQ(entry.position, 0);
+}
+
+TEST_F(QueueManagerTest, GetCurrentTrackEmptyQueue) {
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getCurrentTrack(entry);
+
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, GetCurrentTrackAfterJump) {
+    for (int i = 1; i <= 5; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    queue_mgr->jumpToIndex(3);
+
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getCurrentTrack(entry);
+
+    EXPECT_EQ(ret, ErrorCode::Success);
+    EXPECT_EQ(entry.file_path, "/path/to/track4.flac");
+}
+
+// Get Next Track Tests
+
+TEST_F(QueueManagerTest, GetNextTrack) {
+    auto metadata1 = createTestMetadata("Track 1");
+    auto metadata2 = createTestMetadata("Track 2");
+
+    queue_mgr->addTrack("/path/to/track1.flac", metadata1);
+    queue_mgr->addTrack("/path/to/track2.flac", metadata2);
+
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getNextTrack(entry);
+
+    EXPECT_EQ(ret, ErrorCode::Success);
+    EXPECT_EQ(entry.file_path, "/path/to/track2.flac");
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.current_index, 1);
+}
+
+TEST_F(QueueManagerTest, GetNextTrackMultiple) {
+    for (int i = 1; i <= 5; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    queue::QueueEntry entry;
+    for (int i = 0; i < 4; ++i) {
+        ErrorCode ret = queue_mgr->getNextTrack(entry);
+        EXPECT_EQ(ret, ErrorCode::Success);
+    }
+
+    // Should now be at last track
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.current_index, 4);
+}
+
+TEST_F(QueueManagerTest, GetNextTrackAtEnd) {
+    auto metadata = createTestMetadata("Track 1");
+    queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getNextTrack(entry);
+
+    // Depends on queue mode, should either fail or loop
+    auto state = queue_mgr->getQueueState();
+    if (state.mode == queue::PlaybackMode::Sequential) {
+        EXPECT_NE(ret, ErrorCode::Success);
+    }
+}
+
+TEST_F(QueueManagerTest, GetNextTrackEmptyQueue) {
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getNextTrack(entry);
+
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+// Get Previous Track Tests
+
+TEST_F(QueueManagerTest, GetPreviousTrack) {
+    for (int i = 1; i <= 3; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    // Move to second track
+    queue_mgr->getNextTrack(queue::QueueEntry());
+
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getPreviousTrack(entry);
+
+    EXPECT_EQ(ret, ErrorCode::Success);
+    EXPECT_EQ(entry.file_path, "/path/to/track1.flac");
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.current_index, 0);
+}
+
+TEST_F(QueueManagerTest, GetPreviousTrackAtStart) {
+    auto metadata = createTestMetadata("Track 1");
+    queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getPreviousTrack(entry);
+
+    // At start, should either fail or stay at start
+    auto state = queue_mgr->getQueueState();
+    if (state.mode == queue::PlaybackMode::Sequential) {
+        EXPECT_EQ(state.current_index, 0);
+    }
+}
+
+TEST_F(QueueManagerTest, GetPreviousTrackEmptyQueue) {
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getPreviousTrack(entry);
+
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+// Jump To Index Tests
+
+TEST_F(QueueManagerTest, JumpToIndex) {
+    for (int i = 1; i <= 3; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    ErrorCode ret = queue_mgr->jumpToIndex(2);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    queue::QueueEntry entry;
+    queue_mgr->getCurrentTrack(entry);
+    EXPECT_EQ(entry.file_path, "/path/to/track3.flac");
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.current_index, 2);
+}
+
+TEST_F(QueueManagerTest, JumpToInvalidIndex) {
+    for (int i = 1; i <= 3; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    ErrorCode ret = queue_mgr->jumpToIndex(10);
+    EXPECT_NE(ret, ErrorCode::Success);
+
+    ret = queue_mgr->jumpToIndex(-1);
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, JumpToSameIndex) {
+    auto metadata = createTestMetadata("Track 1");
+    queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    ErrorCode ret = queue_mgr->jumpToIndex(0);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+// Playback Mode Tests
+
+TEST_F(QueueManagerTest, SetPlaybackModeSequential) {
+    ErrorCode ret = queue_mgr->setPlaybackMode(queue::PlaybackMode::Sequential);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto mode = queue_mgr->getPlaybackMode();
+    EXPECT_EQ(mode, queue::PlaybackMode::Sequential);
+}
+
+TEST_F(QueueManagerTest, SetPlaybackModeRandom) {
+    ErrorCode ret = queue_mgr->setPlaybackMode(queue::PlaybackMode::Random);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto mode = queue_mgr->getPlaybackMode();
+    EXPECT_EQ(mode, queue::PlaybackMode::Random);
+}
+
+TEST_F(QueueManagerTest, SetPlaybackModeLoopSingle) {
+    ErrorCode ret = queue_mgr->setPlaybackMode(queue::PlaybackMode::LoopSingle);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto mode = queue_mgr->getPlaybackMode();
+    EXPECT_EQ(mode, queue::PlaybackMode::LoopSingle);
+}
+
+TEST_F(QueueManagerTest, SetPlaybackModeLoopAll) {
+    ErrorCode ret = queue_mgr->setPlaybackMode(queue::PlaybackMode::LoopAll);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto mode = queue_mgr->getPlaybackMode();
+    EXPECT_EQ(mode, queue::PlaybackMode::LoopAll);
+}
+
+TEST_F(QueueManagerTest, ChangePlaybackMode) {
+    queue_mgr->setPlaybackMode(queue::PlaybackMode::Sequential);
+    queue_mgr->setPlaybackMode(queue::PlaybackMode::Random);
+    queue_mgr->setPlaybackMode(queue::PlaybackMode::LoopAll);
+
+    auto mode = queue_mgr->getPlaybackMode();
+    EXPECT_EQ(mode, queue::PlaybackMode::LoopAll);
+}
+
+// Shuffle Queue Tests
+
+TEST_F(QueueManagerTest, ShuffleQueue) {
+    for (int i = 1; i <= 10; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    std::string first_track = queue_mgr->getQueueState().entries[0].file_path;
+
+    ErrorCode ret = queue_mgr->shuffleQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 10);
+
+    // First track should still be at position 0 (current playing)
+    // but other tracks should be shuffled
+    EXPECT_EQ(state.entries[0].file_path, first_track);
+    EXPECT_EQ(state.current_index, 0);
+}
+
+TEST_F(QueueManagerTest, ShuffleEmptyQueue) {
+    ErrorCode ret = queue_mgr->shuffleQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, ShuffleSingleTrack) {
+    auto metadata = createTestMetadata("Track 1");
+    queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    ErrorCode ret = queue_mgr->shuffleQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 1);
+}
+
+TEST_F(QueueManagerTest, ShuffleTwice) {
+    for (int i = 1; i <= 10; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    queue_mgr->shuffleQueue();
+    auto state1 = queue_mgr->getQueueState();
+
+    queue_mgr->shuffleQueue();
+    auto state2 = queue_mgr->getQueueState();
+
+    // Track order should likely be different (though random could produce same order)
+    bool same_order = true;
+    for (size_t i = 1; i < state1.entries.size(); ++i) {
+        if (state1.entries[i].file_path != state2.entries[i].file_path) {
+            same_order = false;
+            break;
+        }
+    }
+    // Very unlikely to be same order twice
+    EXPECT_FALSE(same_order);
+}
+
+// Save/Load Queue Tests
+
+TEST_F(QueueManagerTest, SaveQueue) {
+    auto metadata = createTestMetadata("Track 1");
+    queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    ErrorCode ret = queue_mgr->saveQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, SaveEmptyQueue) {
+    ErrorCode ret = queue_mgr->saveQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, LoadQueue) {
+    // First save a queue
+    for (int i = 1; i <= 3; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    ErrorCode ret = queue_mgr->saveQueue();
+    ASSERT_EQ(ret, ErrorCode::Success);
+
+    // Clear and reload
+    queue_mgr->clearQueue();
+    ret = queue_mgr->loadQueue();
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 3);
+}
+
+TEST_F(QueueManagerTest, SaveLoadPreservesMetadata) {
+    auto metadata = createTestMetadata("Test Title", 200);
+    metadata.artist = "Test Artist";
+    metadata.album = "Test Album";
+    metadata.genre = "Test Genre";
+
+    queue_mgr->addTrack("/path/to/track.flac", metadata);
+
+    queue_mgr->saveQueue();
+    queue_mgr->clearQueue();
+    queue_mgr->loadQueue();
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries[0].metadata.title, "Test Title");
+    EXPECT_EQ(state.entries[0].metadata.artist, "Test Artist");
+    EXPECT_EQ(state.entries[0].metadata.album, "Test Album");
+    EXPECT_EQ(state.entries[0].metadata.genre, "Test Genre");
+    EXPECT_EQ(state.entries[0].metadata.duration, 200);
+}
+
+TEST_F(QueueManagerTest, LoadNonExistentQueue) {
+    queue_mgr->clearQueue();
+    ErrorCode ret = queue_mgr->loadQueue();
+    // Should handle gracefully, may fail or create empty queue
+}
+
+TEST_F(QueueManagerTest, GetQueueFilePath) {
+    std::string path = queue_mgr->getQueueFilePath();
+    EXPECT_FALSE(path.empty());
+}
+
+// Loop Mode Tests
+
+TEST_F(QueueManagerTest, LoopSingleNextTrack) {
+    auto metadata = createTestMetadata("Track 1");
+    queue_mgr->addTrack("/path/to/track1.flac", metadata);
+
+    queue_mgr->setPlaybackMode(queue::PlaybackMode::LoopSingle);
+
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getNextTrack(entry);
+
+    EXPECT_EQ(ret, ErrorCode::Success);
+    EXPECT_EQ(entry.file_path, "/path/to/track1.flac");
+}
+
+TEST_F(QueueManagerTest, LoopAllNextTrack) {
+    for (int i = 1; i <= 2; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    queue_mgr->setPlaybackMode(queue::PlaybackMode::LoopAll);
+
+    // Go to last track
+    queue_mgr->jumpToIndex(1);
+
+    // Next should loop to first
+    queue::QueueEntry entry;
+    ErrorCode ret = queue_mgr->getNextTrack(entry);
+
+    EXPECT_EQ(ret, ErrorCode::Success);
+    EXPECT_EQ(entry.file_path, "/path/to/track1.flac");
+}
+
+// Random Mode Tests
+
+TEST_F(QueueManagerTest, RandomModeNextTrack) {
+    for (int i = 1; i <= 5; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    queue_mgr->setPlaybackMode(queue::PlaybackMode::Random);
+
+    queue::QueueEntry entry1, entry2;
+    queue_mgr->getNextTrack(entry1);
+    queue_mgr->getNextTrack(entry2);
+
+    // Should get different tracks (though random could pick same)
+    // Just verify it doesn't crash and returns valid entries
+    EXPECT_FALSE(entry1.file_path.empty());
+    EXPECT_FALSE(entry2.file_path.empty());
+}
+
+// Large Queue Tests
+
+TEST_F(QueueManagerTest, LargeQueuePerformance) {
+    const int track_count = 1000;
+
+    auto start = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < track_count; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+    // Should complete in reasonable time
+    EXPECT_LT(duration.count(), 1000);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), track_count);
+}
+
+TEST_F(QueueManagerTest, LargeQueueNavigation) {
+    const int track_count = 500;
+    for (int i = 0; i < track_count; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    // Jump to middle
+    ErrorCode ret = queue_mgr->jumpToIndex(track_count / 2);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    queue::QueueEntry entry;
+    ret = queue_mgr->getCurrentTrack(entry);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+// Edge Cases
+
+TEST_F(QueueManagerTest, AddDuplicateTracks) {
+    auto metadata = createTestMetadata("Track 1");
+
+    queue_mgr->addTrack("/path/to/track.flac", metadata);
+    queue_mgr->addTrack("/path/to/track.flac", metadata);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 2);
+}
+
+TEST_F(QueueManagerTest, VeryLongTrackPath) {
+    auto metadata = createTestMetadata("Track 1");
+    std::string long_path = "/path/to/very/long/directory/name/that/exceeds/normal/length/track.flac";
+
+    ErrorCode ret = queue_mgr->addTrack(long_path, metadata);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, TrackWithSpecialCharacters) {
+    auto metadata = createTestMetadata("Track with special chars: \u00e9\u00f1\u00fc");
+    std::string special_path = "/path/to/track with spaces & special!.flac";
+
+    ErrorCode ret = queue_mgr->addTrack(special_path, metadata);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, ZeroDurationTrack) {
+    auto metadata = createTestMetadata("Track 1", 0);
+    ErrorCode ret = queue_mgr->addTrack("/path/to/track.flac", metadata);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(QueueManagerTest, VeryLongDurationTrack) {
+    auto metadata = createTestMetadata("Long Track", 3600 * 10);  // 10 hours
+    ErrorCode ret = queue_mgr->addTrack("/path/to/track.flac", metadata);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+// Thread Safety Tests (basic)
+
+TEST_F(QueueManagerTest, ConcurrentAccess) {
+    // Add tracks from multiple "threads" (simulated)
+    for (int i = 0; i < 100; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        ErrorCode ret = queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+        EXPECT_EQ(ret, ErrorCode::Success);
+    }
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 100);
+}
+
+// Queue State Tests
+
+TEST_F(QueueManagerTest, QueueStateConsistency) {
+    for (int i = 1; i <= 5; ++i) {
+        auto metadata = createTestMetadata("Track " + std::to_string(i));
+        queue_mgr->addTrack("/path/to/track" + std::to_string(i) + ".flac", metadata);
+    }
+
+    auto state1 = queue_mgr->getQueueState();
+    auto state2 = queue_mgr->getQueueState();
+
+    // States should be identical
+    EXPECT_EQ(state1.entries.size(), state2.entries.size());
+    EXPECT_EQ(state1.current_index, state2.current_index);
+    EXPECT_EQ(state1.mode, state2.mode);
+}
+
+TEST_F(QueueManagerTest, QueueStateAfterOperations) {
+    auto metadata1 = createTestMetadata("Track 1");
+    auto metadata2 = createTestMetadata("Track 2");
+    auto metadata3 = createTestMetadata("Track 3");
+
+    queue_mgr->addTrack("/path/to/track1.flac", metadata1);
+    queue_mgr->addTrack("/path/to/track2.flac", metadata2);
+    queue_mgr->addTrack("/path/to/track3.flac", metadata3);
+
+    queue_mgr->getNextTrack(queue::QueueEntry());
+    queue_mgr->removeTrack(1);
+
+    auto state = queue_mgr->getQueueState();
+    EXPECT_EQ(state.entries.size(), 2);
+    EXPECT_EQ(state.current_index, 1);
+}

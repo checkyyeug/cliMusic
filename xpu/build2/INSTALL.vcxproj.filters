@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\workspace\cliMusic\xpu\build2\CMakeFiles\bc8f5a07695349588e68e638c41d7319\INSTALL_force.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{3A505DF3-7985-362E-B4F1-1D42797A4ABE}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

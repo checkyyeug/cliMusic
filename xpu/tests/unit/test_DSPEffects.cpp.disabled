@@ -1,0 +1,744 @@
+/**
+ * @file test_DSPEffects.cpp
+ * @brief Comprehensive unit tests for DSP effects
+ */
+
+#include <gtest/gtest.h>
+#include "../../src/xpuProcess/VolumeControl.h"
+#include "../../src/xpuProcess/FadeEffects.h"
+#include "../../src/xpuProcess/Equalizer.h"
+#include "../../src/xpuIn2Wav/MathConstants.h"
+#include <algorithm>
+#include <cmath>
+#include <random>
+
+using namespace xpu;
+
+// Volume Control Tests
+
+class VolumeControlTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        volume = std::make_unique<process::VolumeControl>();
+    }
+
+    void TearDown() override {
+        volume.reset();
+    }
+
+    std::unique_ptr<process::VolumeControl> volume;
+
+    std::vector<float> generateTestSignal(int frames, int channels = 2, float amplitude = 0.5f) {
+        std::vector<float> signal(frames * channels);
+        for (int i = 0; i < frames * channels; ++i) {
+            signal[i] = amplitude;
+        }
+        return signal;
+    }
+
+    std::vector<float> generateSineWave(int frames, int channels, float frequency, int sample_rate) {
+        std::vector<float> signal(frames * channels);
+        for (int i = 0; i < frames; ++i) {
+            float sample = std::sin(2.0f * M_PI * frequency * i / sample_rate);
+            for (int ch = 0; ch < channels; ++ch) {
+                signal[i * channels + ch] = sample;
+            }
+        }
+        return signal;
+    }
+};
+
+TEST_F(VolumeControlTest, DefaultVolume) {
+    EXPECT_FLOAT_EQ(volume->getVolume(), 1.0f);
+}
+
+TEST_F(VolumeControlTest, SetVolume) {
+    volume->setVolume(0.5f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 0.5f);
+}
+
+TEST_F(VolumeControlTest, SetVolumeMultipleTimes) {
+    volume->setVolume(0.3f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 0.3f);
+
+    volume->setVolume(0.7f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 0.7f);
+
+    volume->setVolume(1.5f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 1.5f);
+}
+
+TEST_F(VolumeControlTest, VolumeClampingUpper) {
+    volume->setVolume(2.5f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 2.0f);
+
+    volume->setVolume(10.0f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 2.0f);
+}
+
+TEST_F(VolumeControlTest, VolumeClampingLower) {
+    volume->setVolume(-0.1f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 0.0f);
+
+    volume->setVolume(-10.0f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 0.0f);
+}
+
+TEST_F(VolumeControlTest, VolumeZero) {
+    volume->setVolume(0.0f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 0.0f);
+}
+
+TEST_F(VolumeControlTest, VolumeMax) {
+    volume->setVolume(2.0f);
+    EXPECT_FLOAT_EQ(volume->getVolume(), 2.0f);
+}
+
+TEST_F(VolumeControlTest, ProcessNoChange) {
+    auto signal = generateTestSignal(100, 2);
+    std::vector<float> original = signal;
+
+    volume->setVolume(1.0f);
+    volume->process(signal.data(), 100, 2);
+
+    EXPECT_EQ(signal, original);
+}
+
+TEST_F(VolumeControlTest, ProcessHalfVolume) {
+    auto signal = generateTestSignal(100, 2, 0.5f);
+
+    volume->setVolume(0.5f);
+    volume->process(signal.data(), 100, 2);
+
+    for (const auto& sample : signal) {
+        EXPECT_FLOAT_EQ(sample, 0.25f); // 0.5 * 0.5
+    }
+}
+
+TEST_F(VolumeControlTest, ProcessDoubleVolume) {
+    auto signal = generateTestSignal(100, 2, 0.5f);
+
+    volume->setVolume(2.0f);
+    volume->process(signal.data(), 100, 2);
+
+    for (const auto& sample : signal) {
+        EXPECT_FLOAT_EQ(sample, 1.0f); // 0.5 * 2.0 = 1.0
+    }
+}
+
+TEST_F(VolumeControlTest, ProcessZeroVolume) {
+    auto signal = generateTestSignal(100, 2, 0.5f);
+
+    volume->setVolume(0.0f);
+    volume->process(signal.data(), 100, 2);
+
+    for (const auto& sample : signal) {
+        EXPECT_FLOAT_EQ(sample, 0.0f);
+    }
+}
+
+TEST_F(VolumeControlTest, ProcessQuarterVolume) {
+    auto signal = generateTestSignal(100, 2, 0.8f);
+
+    volume->setVolume(0.25f);
+    volume->process(signal.data(), 100, 2);
+
+    for (const auto& sample : signal) {
+        EXPECT_FLOAT_EQ(sample, 0.2f); // 0.8 * 0.25
+    }
+}
+
+TEST_F(VolumeControlTest, ProcessMono) {
+    auto signal = generateTestSignal(100, 1, 0.5f);
+
+    volume->setVolume(0.5f);
+    volume->process(signal.data(), 100, 1);
+
+    for (const auto& sample : signal) {
+        EXPECT_FLOAT_EQ(sample, 0.25f);
+    }
+}
+
+TEST_F(VolumeControlTest, ProcessStereo) {
+    auto signal = generateTestSignal(100, 2, 0.5f);
+
+    volume->setVolume(0.5f);
+    volume->process(signal.data(), 100, 2);
+
+    for (const auto& sample : signal) {
+        EXPECT_FLOAT_EQ(sample, 0.25f);
+    }
+}
+
+TEST_F(VolumeControlTest, ProcessSurround) {
+    auto signal = generateTestSignal(100, 6, 0.5f);
+
+    volume->setVolume(0.5f);
+    volume->process(signal.data(), 100, 6);
+
+    for (const auto& sample : signal) {
+        EXPECT_FLOAT_EQ(sample, 0.25f);
+    }
+}
+
+TEST_F(VolumeControlTest, ProcessSineWave) {
+    auto signal = generateSineWave(480, 2, 440.0f, 48000);
+    std::vector<float> original = signal;
+
+    volume->setVolume(0.5f);
+    volume->process(signal.data(), 480, 2);
+
+    for (size_t i = 0; i < signal.size(); ++i) {
+        EXPECT_FLOAT_EQ(signal[i], original[i] * 0.5f);
+    }
+}
+
+TEST_F(VolumeControlTest, ProcessLargeBuffer) {
+    auto signal = generateTestSignal(48000, 2, 0.5f);
+
+    volume->setVolume(0.7f);
+    volume->process(signal.data(), 48000, 2);
+
+    for (const auto& sample : signal) {
+        EXPECT_FLOAT_EQ(sample, 0.35f);
+    }
+}
+
+TEST_F(VolumeControlTest, ProcessEmptyBuffer) {
+    std::vector<float> signal;
+
+    volume->setVolume(0.5f);
+    volume->process(signal.data(), 0, 2);
+    // Should not crash
+}
+
+TEST_F(VolumeControlTest, VolumeStepChanges) {
+    auto signal = generateTestSignal(100, 2, 0.5f);
+
+    volume->setVolume(0.5f);
+    volume->process(signal.data(), 50, 2);
+
+    volume->setVolume(1.5f);
+    volume->process(signal.data() + 100, 50, 2);
+
+    // First half
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_FLOAT_EQ(signal[i], 0.25f);
+    }
+
+    // Second half
+    for (int i = 100; i < 200; ++i) {
+        EXPECT_FLOAT_EQ(signal[i], 0.75f);
+    }
+}
+
+TEST_F(VolumeControlTest, VolumePreservesStereoSeparation) {
+    std::vector<float> signal(200);
+    for (int i = 0; i < 100; ++i) {
+        signal[i * 2] = 0.5f;     // Left
+        signal[i * 2 + 1] = 0.3f; // Right
+    }
+
+    std::vector<float> original = signal;
+
+    volume->setVolume(0.5f);
+    volume->process(signal.data(), 100, 2);
+
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_FLOAT_EQ(signal[i * 2], original[i * 2] * 0.5f);
+        EXPECT_FLOAT_EQ(signal[i * 2 + 1], original[i * 2 + 1] * 0.5f);
+    }
+}
+
+// Fade Effects Tests
+
+class FadeEffectsTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        fade = std::make_unique<process::FadeEffects>();
+    }
+
+    void TearDown() override {
+        fade.reset();
+    }
+
+    std::unique_ptr<process::FadeEffects> fade;
+
+    std::vector<float> generateTestSignal(int frames, int channels = 2) {
+        std::vector<float> signal(frames * channels);
+        for (int i = 0; i < frames * channels; ++i) {
+            signal[i] = 1.0f;
+        }
+        return signal;
+    }
+};
+
+TEST_F(FadeEffectsTest, ConfigureFadeIn) {
+    ErrorCode ret = fade->configure(process::FadeType::In, 1000, 48000);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(FadeEffectsTest, ConfigureFadeOut) {
+    ErrorCode ret = fade->configure(process::FadeType::Out, 1000, 48000);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(FadeEffectsTest, ConfigureInvalidDuration) {
+    ErrorCode ret = fade->configure(process::FadeType::In, 0, 48000);
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+TEST_F(FadeEffectsTest, ConfigureInvalidSampleRate) {
+    ErrorCode ret = fade->configure(process::FadeType::In, 1000, 0);
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+TEST_F(FadeEffectsTest, ProcessFadeIn) {
+    auto signal = generateTestSignal(4800); // 100ms at 48kHz
+
+    fade->configure(process::FadeType::In, 100, 48000);
+    fade->process(signal.data(), 4800, 2);
+
+    // Check that samples are increasing
+    EXPECT_LT(signal[0], signal[4799]);
+    EXPECT_GT(signal[0], 0.0f);
+    EXPECT_NEAR(signal[4799], 1.0f, 0.01f);
+}
+
+TEST_F(FadeEffectsTest, ProcessFadeOut) {
+    auto signal = generateTestSignal(4800); // 100ms at 48kHz
+
+    fade->configure(process::FadeType::Out, 100, 48000);
+    fade->process(signal.data(), 4800, 2);
+
+    // Check that samples are decreasing
+    EXPECT_GT(signal[0], signal[4799]);
+    EXPECT_NEAR(signal[0], 1.0f, 0.01f);
+    EXPECT_LT(signal[4799], 1.0f);
+}
+
+TEST_F(FadeEffectsTest, FadeInShort) {
+    auto signal = generateTestSignal(480); // 10ms at 48kHz
+
+    fade->configure(process::FadeType::In, 10, 48000);
+    fade->process(signal.data(), 480, 2);
+
+    EXPECT_NEAR(signal[479], 1.0f, 0.01f);
+}
+
+TEST_F(FadeEffectsTest, FadeOutShort) {
+    auto signal = generateTestSignal(480); // 10ms at 48kHz
+
+    fade->configure(process::FadeType::Out, 10, 48000);
+    fade->process(signal.data(), 480, 2);
+
+    EXPECT_NEAR(signal[0], 1.0f, 0.01f);
+}
+
+TEST_F(FadeEffectsTest, FadeLong) {
+    auto signal = generateTestSignal(48000); // 1 second at 48kHz
+
+    fade->configure(process::FadeType::In, 1000, 48000);
+    fade->process(signal.data(), 48000, 2);
+
+    EXPECT_NEAR(signal[0], 0.0f, 0.01f);
+    EXPECT_NEAR(signal[47999], 1.0f, 0.01f);
+}
+
+TEST_F(FadeEffectsTest, FadeComplete) {
+    auto signal = generateTestSignal(4800);
+
+    fade->configure(process::FadeType::In, 100, 48000);
+    fade->process(signal.data(), 4800, 2);
+
+    EXPECT_TRUE(fade->isComplete());
+}
+
+TEST_F(FadeEffectsTest, FadeIncompletePartialProcess) {
+    auto signal = generateTestSignal(4800);
+
+    fade->configure(process::FadeType::In, 100, 48000);
+    fade->process(signal.data(), 2400, 2); // Only half
+
+    EXPECT_FALSE(fade->isComplete());
+}
+
+TEST_F(FadeEffectsTest, ResetFade) {
+    fade->configure(process::FadeType::In, 100, 48000);
+
+    auto signal = generateTestSignal(2400);
+    fade->process(signal.data(), 2400, 2);
+
+    EXPECT_FALSE(fade->isComplete());
+
+    fade->reset();
+    EXPECT_FALSE(fade->isComplete());
+}
+
+TEST_F(FadeEffectsTest, ResetAndReconfigure) {
+    fade->configure(process::FadeType::In, 100, 48000);
+    fade->reset();
+
+    ErrorCode ret = fade->configure(process::FadeType::Out, 200, 48000);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(FadeEffectsTest, FadeMono) {
+    auto signal = generateTestSignal(480, 1);
+
+    fade->configure(process::FadeType::In, 10, 48000);
+    fade->process(signal.data(), 480, 1);
+
+    EXPECT_LT(signal[0], signal[479]);
+}
+
+TEST_F(FadeEffectsTest, FadeMultiChannel) {
+    auto signal = generateTestSignal(480, 6);
+
+    fade->configure(process::FadeType::In, 10, 48000);
+    fade->process(signal.data(), 480, 6);
+
+    // All channels should fade similarly
+    for (int ch = 0; ch < 6; ++ch) {
+        EXPECT_LT(signal[ch], signal[480 - 6 + ch]);
+    }
+}
+
+TEST_F(FadeEffectsTest, FadeInSilence) {
+    std::vector<float> signal(480, 0.0f);
+
+    fade->configure(process::FadeType::In, 10, 48000);
+    fade->process(signal.data(), 480, 2);
+
+    // Should remain silent
+    for (const auto& sample : signal) {
+        EXPECT_FLOAT_EQ(sample, 0.0f);
+    }
+}
+
+TEST_F(FadeEffectsTest, MultipleFadeCycles) {
+    auto signal = generateTestSignal(4800);
+
+    // First fade
+    fade->configure(process::FadeType::In, 100, 48000);
+    fade->process(signal.data(), 4800, 2);
+    EXPECT_TRUE(fade->isComplete());
+
+    // Reset and fade again
+    fade->reset();
+    fade->configure(process::FadeType::Out, 100, 48000);
+
+    std::vector<float> signal2 = generateTestSignal(4800);
+    fade->process(signal2.data(), 4800, 2);
+    EXPECT_TRUE(fade->isComplete());
+}
+
+TEST_F(FadeEffectsTest, FadeLinearCurve) {
+    auto signal = generateTestSignal(1000);
+
+    fade->configure(process::FadeType::In, 1000, 48000);
+    fade->process(signal.data(), 1000, 2);
+
+    // Check approximate linearity
+    float mid_point = signal[500];
+    EXPECT_GT(mid_point, signal[0]);
+    EXPECT_LT(mid_point, signal[999]);
+}
+
+// Equalizer Tests
+
+class EqualizerTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        eq = std::make_unique<process::Equalizer>();
+    }
+
+    void TearDown() override {
+        eq.reset();
+    }
+
+    std::unique_ptr<process::Equalizer> eq;
+
+    std::vector<float> generateTestSignal(int frames, int channels = 2, float value = 0.5f) {
+        std::vector<float> signal(frames * channels);
+        std::fill(signal.begin(), signal.end(), value);
+        return signal;
+    }
+};
+
+TEST_F(EqualizerTest, DefaultGains) {
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), 0.0f); // Bass
+    EXPECT_FLOAT_EQ(eq->getBandGain(1), 0.0f); // Mid
+    EXPECT_FLOAT_EQ(eq->getBandGain(2), 0.0f); // Treble
+}
+
+TEST_F(EqualizerTest, SetBassGain) {
+    ErrorCode ret = eq->setBandGain(0, 5.0f);
+    EXPECT_EQ(ret, ErrorCode::Success);
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), 5.0f);
+}
+
+TEST_F(EqualizerTest, SetMidGain) {
+    ErrorCode ret = eq->setBandGain(1, 3.0f);
+    EXPECT_EQ(ret, ErrorCode::Success);
+    EXPECT_FLOAT_EQ(eq->getBandGain(1), 3.0f);
+}
+
+TEST_F(EqualizerTest, SetTrebleGain) {
+    ErrorCode ret = eq->setBandGain(2, 7.0f);
+    EXPECT_EQ(ret, ErrorCode::Success);
+    EXPECT_FLOAT_EQ(eq->getBandGain(2), 7.0f);
+}
+
+TEST_F(EqualizerTest, SetAllBandGains) {
+    eq->setBandGain(0, 5.0f);
+    eq->setBandGain(1, 2.0f);
+    eq->setBandGain(2, 4.0f);
+
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), 5.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(1), 2.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(2), 4.0f);
+}
+
+TEST_F(EqualizerTest, BandGainClampingUpper) {
+    eq->setBandGain(0, 25.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), 20.0f);
+
+    eq->setBandGain(1, 30.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(1), 20.0f);
+
+    eq->setBandGain(2, 50.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(2), 20.0f);
+}
+
+TEST_F(EqualizerTest, BandGainClampingLower) {
+    eq->setBandGain(0, -25.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), -20.0f);
+
+    eq->setBandGain(1, -30.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(1), -20.0f);
+
+    eq->setBandGain(2, -50.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(2), -20.0f);
+}
+
+TEST_F(EqualizerTest, BandGainBoundaryValues) {
+    eq->setBandGain(0, 20.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), 20.0f);
+
+    eq->setBandGain(0, -20.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), -20.0f);
+
+    eq->setBandGain(0, 0.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), 0.0f);
+}
+
+TEST_F(EqualizerTest, InvalidBand) {
+    ErrorCode ret = eq->setBandGain(3, 5.0f);
+    EXPECT_NE(ret, ErrorCode::Success);
+
+    ret = eq->setBandGain(-1, 5.0f);
+    EXPECT_NE(ret, ErrorCode::Success);
+}
+
+TEST_F(EqualizerTest, LoadPresetFlat) {
+    ErrorCode ret = eq->loadPreset(process::EQPreset::Flat);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), 0.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(1), 0.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(2), 0.0f);
+}
+
+TEST_F(EqualizerTest, LoadPresetRock) {
+    ErrorCode ret = eq->loadPreset(process::EQPreset::Rock);
+    EXPECT_EQ(ret, ErrorCode::Success);
+
+    // Rock preset should boost bass and treble
+    EXPECT_GT(eq->getBandGain(0), 0.0f); // Bass
+    EXPECT_GT(eq->getBandGain(2), 0.0f); // Treble
+}
+
+TEST_F(EqualizerTest, LoadPresetPop) {
+    ErrorCode ret = eq->loadPreset(process::EQPreset::Pop);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(EqualizerTest, LoadPresetClassical) {
+    ErrorCode ret = eq->loadPreset(process::EQPreset::Classical);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(EqualizerTest, LoadPresetJazz) {
+    ErrorCode ret = eq->loadPreset(process::EQPreset::Jazz);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(EqualizerTest, LoadPresetElectronic) {
+    ErrorCode ret = eq->loadPreset(process::EQPreset::Electronic);
+    EXPECT_EQ(ret, ErrorCode::Success);
+}
+
+TEST_F(EqualizerTest, ProcessAudio) {
+    std::vector<float> signal(4800 * 2); // 4800 frames, stereo
+    std::fill(signal.begin(), signal.end(), 0.5f);
+
+    eq->setBandGain(0, 10.0f); // +10dB bass
+    eq->process(signal.data(), 4800, 2, 48000);
+
+    // Audio should be modified
+    // (exact values depend on filter implementation)
+}
+
+TEST_F(EqualizerTest, ProcessNoChangeWithFlatEQ) {
+    auto signal = generateTestSignal(4800, 2, 0.5f);
+    std::vector<float> original = signal;
+
+    eq->reset(); // Flat EQ
+    eq->process(signal.data(), 4800, 2, 48000);
+
+    // With flat EQ, signal should be mostly unchanged
+    // (minor differences possible due to filter precision)
+}
+
+TEST_F(EqualizerTest, ProcessMono) {
+    auto signal = generateTestSignal(4800, 1, 0.5f);
+
+    eq->setBandGain(0, 5.0f);
+    eq->process(signal.data(), 4800, 1, 48000);
+
+    // Should process without errors
+}
+
+TEST_F(EqualizerTest, ProcessStereo) {
+    auto signal = generateTestSignal(4800, 2, 0.5f);
+
+    eq->setBandGain(0, 5.0f);
+    eq->process(signal.data(), 4800, 2, 48000);
+
+    // Should process without errors
+}
+
+TEST_F(EqualizerTest, ProcessMultiChannel) {
+    auto signal = generateTestSignal(4800, 6, 0.5f);
+
+    eq->setBandGain(0, 5.0f);
+    eq->process(signal.data(), 4800, 6, 48000);
+
+    // Should process without errors
+}
+
+TEST_F(EqualizerTest, ProcessDifferentSampleRates) {
+    auto signal = generateTestSignal(4800, 2, 0.5f);
+
+    std::vector<int> sample_rates = {44100, 48000, 96000, 192000};
+
+    for (int sample_rate : sample_rates) {
+        eq->reset();
+        eq->setBandGain(0, 5.0f);
+        eq->process(signal.data(), 4800, 2, sample_rate);
+        // Should handle different sample rates
+    }
+}
+
+TEST_F(EqualizerTest, Reset) {
+    eq->setBandGain(0, 10.0f);
+    eq->setBandGain(1, 5.0f);
+    eq->setBandGain(2, 3.0f);
+
+    eq->reset();
+
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), 0.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(1), 0.0f);
+    EXPECT_FLOAT_EQ(eq->getBandGain(2), 0.0f);
+}
+
+TEST_F(EqualizerTest, ResetClearsFilterState) {
+    auto signal = generateTestSignal(4800, 2, 0.5f);
+
+    eq->setBandGain(0, 10.0f);
+    eq->process(signal.data(), 4800, 2, 48000);
+
+    eq->reset();
+
+    // Process again - filters should start fresh
+    std::vector<float> signal2 = generateTestSignal(4800, 2, 0.5f);
+    eq->setBandGain(0, 10.0f);
+    eq->process(signal2.data(), 4800, 2, 48000);
+}
+
+TEST_F(EqualizerTest, ModifyGainDuringProcessing) {
+    auto signal = generateTestSignal(4800, 2, 0.5f);
+
+    eq->setBandGain(0, 5.0f);
+    eq->process(signal.data(), 2400, 2, 48000);
+
+    eq->setBandGain(0, 10.0f);
+    eq->process(signal.data() + 4800, 2400, 2, 48000);
+
+    // Should handle gain change
+}
+
+TEST_F(EqualizerTest, AllBandsMaximum) {
+    eq->setBandGain(0, 20.0f);
+    eq->setBandGain(1, 20.0f);
+    eq->setBandGain(2, 20.0f);
+
+    auto signal = generateTestSignal(4800, 2, 0.1f);
+    eq->process(signal.data(), 4800, 2, 48000);
+
+    // Should significantly boost signal
+}
+
+TEST_F(EqualizerTest, AllBandsMinimum) {
+    eq->setBandGain(0, -20.0f);
+    eq->setBandGain(1, -20.0f);
+    eq->setBandGain(2, -20.0f);
+
+    auto signal = generateTestSignal(4800, 2, 0.5f);
+    eq->process(signal.data(), 4800, 2, 48000);
+
+    // Should significantly cut signal
+}
+
+TEST_F(EqualizerTest, PresetThenModify) {
+    eq->loadPreset(process::EQPreset::Rock);
+
+    float bass_after_preset = eq->getBandGain(0);
+
+    eq->setBandGain(0, 10.0f);
+
+    EXPECT_NE(eq->getBandGain(0), bass_after_preset);
+    EXPECT_FLOAT_EQ(eq->getBandGain(0), 10.0f);
+}
+
+TEST_F(EqualizerTest, ProcessEmptyBuffer) {
+    std::vector<float> signal;
+
+    eq->setBandGain(0, 5.0f);
+    eq->process(signal.data(), 0, 2, 48000);
+
+    // Should not crash
+}
+
+TEST_F(EqualizerTest, LargeGainAdjustments) {
+    eq->setBandGain(0, -20.0f);
+    eq->setBandGain(1, 0.0f);
+    eq->setBandGain(2, 20.0f);
+
+    auto signal = generateTestSignal(4800, 2, 0.5f);
+    eq->process(signal.data(), 4800, 2, 48000);
+
+    // Should handle extreme EQ settings
+}
+
+TEST_F(EqualizerTest, SwitchPresets) {
+    eq->loadPreset(process::EQPreset::Rock);
+    auto rock_bass = eq->getBandGain(0);
+
+    eq->loadPreset(process::EQPreset::Classical);
+    auto classical_bass = eq->getBandGain(0);
+
+    // Different presets should have different settings
+    // (might be same for some bands, but generally different)
+}

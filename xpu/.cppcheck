@@ -1,0 +1,48 @@
+# Cppcheck configuration for XPU
+
+// Suppressions for false positives and known issues
+suppress=missingIncludeSystem
+
+// Enable all checks
+enable=all
+
+// Check for unused functions
+checkLevel=exhaustive
+
+// Standard
+std=c++17
+
+// Inline suppressions
+inlineSuppressions=true
+
+// Platform
+platform=native
+
+// Inconclusive errors
+inconclusive
+
+// Positions
+positions=true
+
+// Performance (may slow down checking)
+--enable=all
+--inline-suppr
+
+// Severity
+--severity=all
+--severity=warning
+
+// Specific checks
+--check-config
+--suppress=*:*/src/lib/interfaces/*  // Interface stubs return NotImplemented
+--suppress=unusedFunction:*tests/*  // Test code may have unused functions
+--suppress=uninitvar:*src/lib/protocol/*  // Some protocol vars intentionally uninitialized
+
+// Coding standards
+--std=posix
+
+// Exclude directories
+--exclude=build/
+--exclude=cmake-build-*/
+--exclude=external/
+--exclude=vendor/
