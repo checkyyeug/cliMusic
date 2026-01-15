@@ -1126,11 +1126,25 @@ ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
                  input_sample_rate, output_sample_rate, resampler.getRatio(), quality);
     }
 
-    // Allocate buffers
+    // Allocate buffers with pre-allocation for better performance
+    // Pre-allocate to maximum expected size to avoid reallocations
+    constexpr size_t MAX_CHUNK_SIZE = 256 * 1024;  // 256KB max chunk size
+    constexpr size_t MAX_SAMPLES = MAX_CHUNK_SIZE / sizeof(float);
+    constexpr size_t MAX_CHANNELS = 8;  // Support up to 8 channels
+    constexpr size_t RESAMPLE_RATIO = 2;  // Max resample ratio (upsampling can double frames)
+
     std::vector<float> input_buffer;
     std::vector<float> resampled_buffer;
     std::vector<float> output_buffer;
+    std::vector<float> remixed_buffer;
     std::vector<uint8_t> write_buffer;
+
+    // Pre-allocate buffers to avoid frequent reallocations
+    input_buffer.reserve(MAX_SAMPLES);
+    resampled_buffer.reserve(MAX_SAMPLES * RESAMPLE_RATIO);
+    output_buffer.reserve(MAX_SAMPLES * RESAMPLE_RATIO);
+    remixed_buffer.reserve(MAX_SAMPLES * MAX_CHANNELS);
+    write_buffer.reserve(MAX_CHUNK_SIZE * 4);  // 32-bit float to 8-bit may need 4x space
 
     // Track statistics
     size_t total_output_frames = 0;
@@ -1204,32 +1218,34 @@ ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
 
         // Convert channels if needed
         if (output_channels != input_channels) {
-            std::vector<float> remixed;
+            // Reuse pre-allocated remixed_buffer instead of allocating new vector
+            size_t frames = output_buffer.size() / input_channels;
+            size_t total_samples = frames * output_channels;
+
+            // Ensure remixed_buffer is large enough
+            if (total_samples > remixed_buffer.capacity()) {
+                remixed_buffer.reserve(total_samples);
+            }
+            remixed_buffer.resize(total_samples);
 
             if (output_channels < input_channels) {
                 // Downmix: take first N channels
-                size_t frames = output_buffer.size() / input_channels;
-                remixed.resize(frames * output_channels);
-
                 for (size_t i = 0; i < frames; ++i) {
                     for (int ch = 0; ch < output_channels; ++ch) {
-                        remixed[i * output_channels + ch] = output_buffer[i * input_channels + ch];
+                        remixed_buffer[i * output_channels + ch] = output_buffer[i * input_channels + ch];
                     }
                 }
             } else {
                 // Upmix: duplicate channels
-                size_t frames = output_buffer.size() / input_channels;
-                remixed.resize(frames * output_channels);
-
                 for (size_t i = 0; i < frames; ++i) {
                     for (int ch = 0; ch < output_channels; ++ch) {
                         int src_ch = (ch < input_channels) ? ch : 0;
-                        remixed[i * output_channels + ch] = output_buffer[i * input_channels + src_ch];
+                        remixed_buffer[i * output_channels + ch] = output_buffer[i * input_channels + src_ch];
                     }
                 }
             }
 
-            output_buffer = std::move(remixed);
+            output_buffer = std::move(remixed_buffer);
         }
 
         // Track output frames

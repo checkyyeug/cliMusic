@@ -306,10 +306,18 @@ int main(int argc, char* argv[]) {
         LOG_INFO("Fade-out will be implemented in Phase 2 (requires total duration)");
     }
 
-    // Read PCM data from stdin
-    constexpr size_t BUFFER_SIZE = 4096;
-    std::vector<float> audio_buffer(BUFFER_SIZE);
-    std::vector<float> processed_buffer(BUFFER_SIZE);
+    // Read PCM data from stdin with pre-allocated buffers for better performance
+    // Pre-allocate to maximum expected chunk size to avoid reallocations
+    constexpr size_t MAX_CHUNK_SIZE = 256 * 1024;  // 256KB max chunk size (same as xpuIn2Wav)
+    constexpr size_t MAX_SAMPLES = MAX_CHUNK_SIZE / sizeof(float);
+    constexpr size_t MAX_CHANNELS = 8;  // Support up to 8 channels
+
+    std::vector<float> audio_buffer;
+    std::vector<float> processed_buffer;
+
+    // Pre-allocate buffers to avoid frequent reallocations
+    audio_buffer.reserve(MAX_SAMPLES);
+    processed_buffer.reserve(MAX_SAMPLES);
 
     uint64_t total_samples = 0;
     uint64_t total_frames_processed = 0;
@@ -326,11 +334,9 @@ int main(int argc, char* argv[]) {
         // Read PCM data
         size_t samples = data_size / sizeof(float);
 
-        // Ensure buffer is large enough
-        if (samples > audio_buffer.size()) {
-            audio_buffer.resize(samples);
-            processed_buffer.resize(samples);
-        }
+        // Resize buffers (using reserve ensures no reallocation if size <= capacity)
+        audio_buffer.resize(samples);
+        processed_buffer.resize(samples);
 
         std::cin.read(reinterpret_cast<char*>(audio_buffer.data()), data_size);
 
