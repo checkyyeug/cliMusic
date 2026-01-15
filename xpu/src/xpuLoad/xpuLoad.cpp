@@ -211,108 +211,158 @@ int main(int argc, char* argv[]) {
 
     ErrorCode ret;
     protocol::AudioMetadata metadata;
-    std::vector<uint8_t> pcm_data_copy;  // Store a copy of PCM data
 
     if (is_dsd) {
-        // Use DSD decoder
-        LOG_INFO("Using DSD decoder");
+        // DSD files: Use batch mode (DSD decoder doesn't support streaming yet)
+        LOG_INFO("Using DSD decoder (batch mode)");
         load::DSDDecoder dsd_decoder;
         dsd_decoder.setTargetSampleRate(target_sample_rate);
         ret = dsd_decoder.load(input_file);
 
-        if (ret == ErrorCode::Success) {
-            metadata = dsd_decoder.getMetadata();
-            // Copy PCM data before decoder is destroyed
-            pcm_data_copy = dsd_decoder.getPCMData();
-            LOG_INFO("DSD file loaded successfully");
+        if (ret != ErrorCode::Success) {
+            std::string error_msg = "Error code: " + std::to_string(static_cast<int>(ret));
+            std::cerr << error_msg << "\n";
+            LOG_ERROR("Failed to load DSD file: {}", static_cast<int>(ret));
+            return static_cast<int>(getHTTPStatusCode(ret));
         }
+
+        metadata = dsd_decoder.getMetadata();
+
+        // Output metadata as JSON
+        if (!data_only) {
+            std::cout << ::metadataToJSON(metadata);
+            std::cout.flush();
+            LOG_INFO("Metadata output to stdout");
+        }
+
+        // Output PCM data in batch mode for DSD
+        #ifdef PLATFORM_WINDOWS
+        DWORD mode;
+        bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
+        #else
+        bool is_piped = !isatty(STDOUT_FILENO);
+        #endif
+
+        if (!metadata_only && (data_only || is_piped)) {
+            std::vector<uint8_t> pcm_data_copy = dsd_decoder.getPCMData();
+            if (!pcm_data_copy.empty()) {
+                constexpr size_t CHUNK_SIZE = 64 * 1024;
+                size_t total_size = pcm_data_copy.size();
+                size_t offset = 0;
+                int chunk_count = 0;
+
+                LOG_INFO("Streaming PCM data in chunks: {} bytes total", total_size);
+
+                while (offset < total_size) {
+                    size_t chunk_size = (CHUNK_SIZE < total_size - offset) ? CHUNK_SIZE : total_size - offset;
+
+                    uint64_t chunk_bytes = chunk_size;
+                    std::cout.write(reinterpret_cast<const char*>(&chunk_bytes), sizeof(chunk_bytes));
+                    std::cout.write(reinterpret_cast<const char*>(pcm_data_copy.data() + offset), chunk_size);
+                    std::cout.flush();
+
+                    #ifdef PLATFORM_WINDOWS
+                    _flushall();
+                    #else
+                    fflush(nullptr);
+                    #endif
+
+                    chunk_count++;
+                    offset += chunk_size;
+
+                    if (chunk_count <= 5) {
+                        LOG_INFO("Output chunk {}: {} bytes", chunk_count, chunk_size);
+                    }
+                }
+
+                LOG_INFO("PCM data streaming complete: {} chunks, {} bytes", chunk_count, total_size);
+            }
+        } else if (!metadata_only) {
+            LOG_INFO("PCM data skipped (not in pipe mode, use -d to force output)");
+        }
+
     } else {
-        // Use FFmpeg decoder
-        LOG_INFO("Using FFmpeg decoder");
+        // Non-DSD files: Use streaming mode (Phase 3 optimization)
+        LOG_INFO("Using FFmpeg decoder (streaming mode - Phase 3)");
         load::AudioFileLoader loader;
         loader.setTargetSampleRate(target_sample_rate);
-        ret = loader.load(input_file);
 
-        if (ret == ErrorCode::Success) {
-            metadata = loader.getMetadata();
-            // Copy PCM data before loader is destroyed
-            pcm_data_copy = loader.getPCMData();
-            LOG_INFO("Audio file loaded successfully");
+        // Step 1: Prepare streaming (opens file and extracts metadata)
+        ret = loader.prepareStreaming(input_file);
+        if (ret != ErrorCode::Success) {
+            std::string error_msg = "Error code: " + std::to_string(static_cast<int>(ret));
+            std::cerr << error_msg << "\n";
+            LOG_ERROR("Failed to prepare streaming: {}", static_cast<int>(ret));
+            return static_cast<int>(getHTTPStatusCode(ret));
         }
-    }
 
-    if (ret != ErrorCode::Success) {
-        std::string error_msg = "Error code: " + std::to_string(static_cast<int>(ret));
-        std::cerr << error_msg << "\n";
-        LOG_ERROR("Failed to load file: {}", static_cast<int>(ret));
-        return static_cast<int>(getHTTPStatusCode(ret));
-    }
+        // Step 2: Get metadata
+        metadata = loader.getMetadata();
+        LOG_INFO("Metadata extracted successfully");
 
-    // Mark high-resolution audio
-    if (metadata.sample_rate >= 96000) {
-        metadata.is_high_res = true;
-        LOG_INFO("High-resolution audio detected: {} Hz", metadata.sample_rate);
-    }
+        // Mark high-resolution audio
+        if (metadata.sample_rate >= 96000) {
+            metadata.is_high_res = true;
+            LOG_INFO("High-resolution audio detected: {} Hz", metadata.sample_rate);
+        }
 
-    // Output metadata as JSON
-    if (!data_only) {
-        std::cout << ::metadataToJSON(metadata);
-        std::cout.flush();  // Ensure metadata is sent before PCM data
-        LOG_INFO("Metadata output to stdout");
-    }
+        // Step 3: Output metadata as JSON
+        if (!data_only) {
+            std::cout << ::metadataToJSON(metadata);
+            std::cout.flush();
+            LOG_INFO("Metadata output to stdout");
+        }
 
-    // Output PCM data ONLY if:
-    // 1. --data option is specified, OR
-    // 2. stdout is NOT a terminal (piped to another program)
-    #ifdef PLATFORM_WINDOWS
-    DWORD mode;
-    bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
-    #else
-    bool is_piped = !isatty(STDOUT_FILENO);
-    #endif
+        // Step 4: Stream PCM data ONLY if:
+        // 1. --data option is specified, OR
+        // 2. stdout is NOT a terminal (piped to another program)
+        #ifdef PLATFORM_WINDOWS
+        DWORD mode;
+        bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
+        #else
+        bool is_piped = !isatty(STDOUT_FILENO);
+        #endif
 
-    if (!metadata_only && (data_only || is_piped)) {
-        // Output PCM data in chunks (for both DSD and non-DSD files)
-        if (!pcm_data_copy.empty()) {
-            // Output in chunks to enable streaming playback
-            // This allows downstream modules to start processing immediately
-            // Balance between latency and overhead
-            constexpr size_t CHUNK_SIZE = 64 * 1024;  // 64KB chunks (about 0.67 seconds at 48kHz stereo)
-
-            size_t total_size = pcm_data_copy.size();
-            size_t offset = 0;
+        if (!metadata_only && (data_only || is_piped)) {
+            // Stream PCM data using callback
             int chunk_count = 0;
 
-            LOG_INFO("Streaming PCM data in chunks: {} bytes total", total_size);
-
-            while (offset < total_size) {
-                size_t chunk_size = (CHUNK_SIZE < total_size - offset) ? CHUNK_SIZE : total_size - offset;
+            auto streaming_callback = [&](const float* chunk_data, size_t chunk_samples) -> bool {
+                chunk_count++;
+                size_t chunk_bytes = chunk_samples * sizeof(float);
 
                 // Output chunk: [8-byte size header][PCM data]
-                uint64_t chunk_bytes = chunk_size;
-                std::cout.write(reinterpret_cast<const char*>(&chunk_bytes), sizeof(chunk_bytes));
-                std::cout.write(reinterpret_cast<const char*>(pcm_data_copy.data() + offset), chunk_size);
+                uint64_t size_header = chunk_bytes;
+                std::cout.write(reinterpret_cast<const char*>(&size_header), sizeof(size_header));
+                std::cout.write(reinterpret_cast<const char*>(chunk_data), chunk_bytes);
                 std::cout.flush();
 
                 #ifdef PLATFORM_WINDOWS
-                _flushall();  // Force flush on Windows
+                _flushall();
                 #else
-                fflush(nullptr);  // Force flush on Unix
+                fflush(nullptr);
                 #endif
-
-                chunk_count++;
-                offset += chunk_size;
 
                 // Log first few chunks
                 if (chunk_count <= 5) {
-                    LOG_INFO("Output chunk {}: {} bytes", chunk_count, chunk_size);
+                    LOG_INFO("Output chunk {}: {} samples ({} bytes)", chunk_count, chunk_samples, chunk_bytes);
                 }
+
+                return true;  // Continue streaming
+            };
+
+            LOG_INFO("Starting PCM data streaming...");
+            ret = loader.streamPCM(streaming_callback, 64 * 1024);  // 64KB chunks
+
+            if (ret != ErrorCode::Success) {
+                LOG_ERROR("Streaming failed: {}", static_cast<int>(ret));
+                return static_cast<int>(getHTTPStatusCode(ret));
             }
 
-            LOG_INFO("PCM data streaming complete: {} chunks, {} bytes", chunk_count, total_size);
+            LOG_INFO("PCM data streaming complete: {} chunks", chunk_count);
+        } else if (!metadata_only) {
+            LOG_INFO("PCM data skipped (not in pipe mode, use -d to force output)");
         }
-    } else if (!metadata_only) {
-        LOG_INFO("PCM data skipped (not in pipe mode, use -d to force output)");
     }
 
     LOG_INFO("xpuLoad completed successfully");
