@@ -32,6 +32,7 @@ struct AudioMetadata {
     bool is_lossless;
     bool is_high_res;
     int original_sample_rate;  // Original sample rate before resampling
+    int original_bit_depth;    // Original bit depth before conversion
 
     AudioMetadata()
         : track_number(0)
@@ -43,7 +44,8 @@ struct AudioMetadata {
         , bitrate(0.0)
         , is_lossless(false)
         , is_high_res(false)
-        , original_sample_rate(0) {}
+        , original_sample_rate(0)
+        , original_bit_depth(0) {}
 };
 
 /**
@@ -61,6 +63,7 @@ inline std::string metadataToJSON(const AudioMetadata& meta) {
     json += "  \"sample_rate\": " + std::to_string(meta.sample_rate) + ",\n";
     json += "  \"original_sample_rate\": " + std::to_string(meta.original_sample_rate) + ",\n";
     json += "  \"bit_depth\": " + std::to_string(meta.bit_depth) + ",\n";
+    json += "  \"original_bit_depth\": " + std::to_string(meta.original_bit_depth) + ",\n";
     json += "  \"channels\": " + std::to_string(meta.channels) + ",\n";
     json += "  \"sample_count\": " + std::to_string(meta.sample_count) + ",\n";
     json += "  \"format\": \"" + meta.format + "\",\n";

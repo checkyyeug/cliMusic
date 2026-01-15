@@ -99,7 +99,7 @@ xpuDaemon --mcp --stdio
 | 模块 | 功能 | 典型用法 |
 |------|------|----------|
 | `xpuLoad` | 解析音频文件 | `xpuLoad song.flac` |
-| `xpuIn2Wav` | 转换为 WAV | `xpuLoad a.flac \| xpuIn2Wav` |
+| `xpuIn2Wav` | 转换为 WAV | `xpuLoad a.flac \| xpuIn2Wav -` |
 | `xpuPlay` | 播放音频 | `xpuPlay` 或 `xpuPlay --device hdmi` |
 | `xpuQueue` | 队列管理 | `xpuQueue add *.flac` |
 | `xpuProcess` | DSP 处理 | `xpuProcess --eq rock --volume 0.8` |
@@ -143,8 +143,8 @@ xpuDaemon --mcp --stdio
 
 #### 播放控制
 ```bash
-# 播放单个文件
-xpuLoad song.flac | xpuIn2Wav | xpuPlay
+# 播放单个文件（管道模式）
+xpuLoad song.flac | xpuIn2Wav - | xpuPlay
 
 # 使用队列
 xpuQueue add ~/Music/*.flac
@@ -159,13 +159,13 @@ xpuStream --target ws://192.168.1.100:8080/stream
 #### 音频处理
 ```bash
 # 基础 EQ
-xpuLoad song.flac | xpuIn2Wav | xpuProcess --eq rock | xpuPlay
+xpuLoad song.flac | xpuIn2Wav - | xpuProcess --eq rock | xpuPlay
 
 # 音量控制
-xpuProcess --volume 0.8
+xpuLoad song.flac | xpuIn2Wav - | xpuProcess --volume 0.8 | xpuPlay
 
 # 格式转换
-xpuLoad song.flac | xpuIn2Wav --output output.wav
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -b 16
 ```
 
 #### AI 集成
@@ -183,8 +183,8 @@ xpuDaemon --mcp --stdio
 
 | 模块 | 输入 | 输出 | 用途 |
 |------|------|------|------|
-| **xpuLoad** | 音频文件 | 元数据+流 | 解析音频 |
-| **xpuIn2Wav** | 任意格式 | WAV | 格式转换 |
+| **xpuLoad** | 音频文件 | JSON元数据 + PCM流 | 解析音频 |
+| **xpuIn2Wav** | 文件或stdin（来自xpuLoad） | WAV文件 | 格式转换 |
 | **xpuProcess** | WAV | 处理后的 WAV | DSP 处理 |
 | **xpuPlay** | WAV | 音频输出 | 播放音频 |
 | **xpuQueue** | 命令 | 状态 | 队列管理 |
@@ -2054,111 +2054,156 @@ xpuLoad song.flac | xpuIn2Wav | \
 
 #### 3.2.1 xpuLoad (音频解析)
 
+**核心功能：解析音频文件，输出元数据和 PCM 数据**
+
 ```bash
-# 基本用法
-xpuLoad <file> [--format json|binary]
+# 基本用法（默认保持原始格式）
+xpuLoad <file>
+
+# 仅输出元数据
+xpuLoad --metadata <file>
+
+# 仅输出 PCM 数据（8字节大小头 + PCM）
+xpuLoad --data <file>
+
+# 指定输出采样率（转换为 32-bit float）
+xpuLoad -r 48000 <file>
+xpuLoad --sample-rate 96000 <file>
+
+# 管道模式（自动检测，输出 PCM 数据）
+xpuLoad song.flac | xpuPlay - -a
+xpuLoad song.flac | xpuIn2Wav -
 
 # 输出 (stdout)
 {
   "success": true,
   "metadata": {
+    "file_path": "/path/to/audio.flac",
+    "format": "FLAC",
     "title": "Song Title",
     "artist": "Artist Name",
     "album": "Album Name",
     "duration": 245.8,
-    "sample_rate": 44100,
+    "sample_rate": 96000,           # 输出采样率
+    "original_sample_rate": 96000,  # 原始文件采样率
     "channels": 2,
-    "bit_depth": 24,
-    "codec": "flac"
-  },
-  "audio_stream": "base64_encoded_pcm_data"
+    "bit_depth": 32,                # 输出位深度（始终 32-bit float）
+    "original_bit_depth": 24,       # 原始文件位深度
+    "is_lossless": true,
+    "is_high_res": true
+  }
 }
 
-# 管道模式
-xpuLoad song.flac --format binary | xpuIn2Wav
+# PCM 数据（32-bit float, interleaved, stereo）
+# 输出格式：[8字节大小头][PCM 数据...]
+# 跟随 JSON 元数据之后
 
-# 支持的无损格式
-# FLAC, WAV, ALAC, DSD (DSF/DSD)
+# 支持的格式
+# 无损: FLAC, WAV, ALAC, DSD (DSF/DSDIFF)
+# 有损: MP3, AAC, OGG, OPUS
 ```
+
+**默认行为（自动管道检测）：**
+- **终端直接运行**：仅输出 JSON 元数据（不输出 PCM 数据，避免二进制乱码）
+- **管道模式**（`|`）：自动检测并输出 JSON 元数据 + PCM 数据
+- **`-m, --metadata`**：强制仅输出 JSON 元数据
+- **`-d, --data`**：强制仅输出 PCM 数据（用于管道调试）
+
+**输出格式说明：**
+- **终端模式**（默认）：仅 JSON 元数据
+- **管道模式**（自动检测）：JSON 元数据 + 8字节大小头 + PCM 数据
+- **`-m, --metadata`**：仅 JSON 元数据
+- **`-d, --data`**：仅 8字节大小头 + PCM 数据
+
+**管道检测机制：**
+- **Windows**: 使用 `GetConsoleMode()` 检测是否为控制台
+- **Linux/macOS**: 使用 `isatty(STDOUT_FILENO)` 检测是否为终端
+- 当检测到管道时，自动启用 PCM 数据输出
+
+**PCM 数据始终是**：
+- 32-bit float, stereo, interleaved
+- 元数据中的 `sample_rate` 反映实际输出格式
+- 元数据中的 `original_sample_rate` 和 `original_bit_depth` 反映原始文件格式
 
 #### 3.2.2 xpuIn2Wav (统一转换为 WAV + FFT 缓存)
 
-**核心功能：将无损音频文件转换为标准 WAV 格式，并计算 FFT 频谱数据缓存到本地**
+**核心功能：将音频文件转换为标准 WAV 格式，并计算 FFT 频谱数据缓存到本地**
 
-这是音频管道的"统一化"模块，确保后续所有模块只需处理 WAV 一种格式。同时计算 FFT 数据并缓存，避免后续模块重复计算。只支持无损格式：FLAC、WAV、ALAC、DSD。
+这是音频管道的"统一化"模块，确保后续所有模块只需处理 WAV 一种格式。同时计算 FFT 数据并缓存，避免后续模块重复计算。
+
+支持两种输入模式：
+1. **直接文件模式**：从文件系统读取音频文件
+2. **管道模式**：从 stdin 读取 xpuLoad 的输出
 
 ```bash
-# 基本用法（使用配置文件中的参数）
-xpuIn2Wav
+# 基本用法（直接文件模式）
+xpuIn2Wav input.flac
+
+# 管道模式（从 xpuLoad 接收数据）
+xpuLoad song.flac | xpuIn2Wav -
 
 # 指定输出参数
-xpuIn2Wav --rate 96000 --depth 32 --channels 2
+xpuIn2Wav -r 96000 -b 32 -c 2 input.flac
+xpuIn2Wav --rate 48000 --bits 16 --channels 2 input.flac
 
-# 最高质量模式
-xpuIn2Wav --high-quality
-
-# 快速模式（较低质量）
-xpuIn2Wav --fast
+# 管道模式指定输出参数
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -b 16
 
 # FFT 缓存选项
-xpuIn2Wav --fft-cache                # 启用 FFT 缓存（默认）
-xpuIn2Wav --no-fft-cache             # 禁用 FFT 缓存
-xpuIn2Wav --fft-cache-dir ~/.cache/xpu/fft  # 指定缓存目录
+xpuIn2Wav --cache-dir ~/.cache/xpu/fft  # 指定缓存目录
+xpuIn2Wav --fft-size 2048              # FFT 窗口大小（1024/2048/4096/8192）
+xpuIn2Wav -f                           # 强制绕过 FFT 缓存
 
-# FFT 参数
-xpuIn2Wav --fft-size 2048            # FFT 窗口大小（1024/2048/4096/8192）
-xpuIn2Wav --fft-hop 1024              # FFT 跳跃大小（默认 fft-size/2）
-xpuIn2Wav --fft-window hann          # 窗函数（hann/hamming/blackman）
+# 输入格式
+# 文件模式：支持 xpuLoad 的所有格式（FLAC, WAV, ALAC, DSD, MP3, AAC, OGG, OPUS）
+# 管道模式：接收 xpuLoad 输出的 [JSON元数据][8字节大小头][PCM数据]
 
-# 输入 (stdin)
-# 来自 xpuLoad 的二进制格式
-
-# 输出 (stdout)
-# 标准 WAV 格式 PCM 数据（44字节头部 + 数据）
-
-# 输出 (stderr)
-# FFT 缓存信息 JSON
+# 输出
+# 文件模式：生成 <input>_out.wav
+# 管道模式：生成 stdin_output.wav
 ```
 
-**工作流程：**
+**管道模式工作流程：**
+
+```
+xpuLoad 输出格式:
+  [JSON元数据]\n
+  [8字节大小头（小端序uint64_t）]
+  [PCM数据（32-bit float, interleaved, stereo）]
+
+xpuIn2Wav 管道处理:
+  1. 从 stdin 读取并解析 JSON 元数据
+  2. 读取 8 字节大小头
+  3. 读取指定字节数的 PCM 数据
+  4. 转换为目标格式（采样率、位深度、声道数）
+  5. 生成 WAV 文件
+```
+
+**文件模式工作流程：**
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ xpuIn2Wav 处理流程                                           │
+│ xpuIn2Wav 处理流程（文件模式）                               │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  1. 读取 xpuLoad 输出的二进制格式                          │
-│     ├── 解析元数据和编码信息                                 │
-│     └── 验证文件完整性                                       │
+│  1. 读取音频文件                                            │
+│     ├── 检测格式（扩展名）                                   │
+│     ├── DSD 格式 → DSDDecoder                               │
+│     └── 其他格式 → AudioFileLoader (FFmpeg)                 │
 │                                                             │
-│  2. 读取配置参数 (xpuSetting.conf)                        │
-│     ├── target_sample_rate (目标采样率)                    │
-│     ├── target_bit_depth (目标位深)                        │
-│     └── channels (声道数)                                   │
+│  2. 格式转换                                                │
+│     ├── 重采样到目标采样率（libsamplerate）                  │
+│     ├── 转换位深度（32/24/16-bit）                           │
+│     └── 转换声道数（1/2/4/6/8）                             │
 │                                                             │
-│  3. 解码音频数据                                            │
-│     ├── 使用 FFmpeg 解码无损格式                           │
-│     ├── FLAC, WAV, ALAC, DSD (DSF/DSD)                      │
-│     └── 输出为原始 PCM                                       │
-│                                                             │
-│  4. 重采样和格式转换                                        │
-│     ├── 转换到目标采样率 (最高 768kHz)                      │
-│     ├── 转换到目标位深                                     │
-│     └── 转换声道数                                          │
-│                                                             │
-│  5. 计算 FFT 频谱数据                                       │
-│     ├── 分帧处理（重叠窗口）                                 │
-│     ├── 应用窗函数                                          │
-│     ├── FFT 变换                                            │
-│     ├── 计算幅度谱和相位谱                                   │
-│     └── 缓存到磁盘                                           │
-│                                                             │
-│  6. 输出标准 WAV 格式                                        │
-│     ├── 44字节 WAV 头部                                     │
-│     └── PCM 音频数据 → stdout                               │
+│  3. 生成 WAV 文件                                           │
+│     ├── 创建 WAV 头部（44字节）                             │
+│     └── 写入 PCM 数据                                        │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**FFT 缓存（Phase 2 实现）:**
 
 **FFT 缓存输出格式：**
 
@@ -3682,35 +3727,257 @@ xpuStream --target airplay://HomePod --codec wav
 
 #### 3.2.9 xpuPlay (音频播放)
 
-音频播放模块，支持本地文件播放和网络流媒体播放。
+音频播放模块，支持低延迟音频播放和自动采样率转换。
 
 ```bash
 # 本地文件播放（通过管道）
-xpuLoad song.flac | xpuIn2Wav | xpuPlay
+xpuLoad song.flac | xpuPlay -
 
-# 基本用法
-xpuPlay [--device default] [--volume 0.8]
+# 命令行选项
+xpuPlay [-h] [-v] [-d <name>] [-b <size>] [-t] [-l] [-V] [-a] [-q <qual>] [-]
+
+选项说明：
+  -h, --help              显示帮助信息
+  -v, --version           显示版本信息
+  -d, --device <name>     指定音频设备
+  -b, --buffer-size <sz>  缓冲区大小（256-16384样本，默认2048）
+  -t, --latency-test      运行延迟测试
+  -l, --list-devices      列出可用设备
+  -V, --verbose           启用详细输出
+  -a, --auto              启用自动采样率转换
+  -q, --quality <qual>    重采样质量（sinc_best, sinc_medium, sinc_fastest）
+  -                       从 stdin 读取（默认）
+
+# 基本用法（从 stdin 读取，默认）
+xpuPlay
+
+# 自动采样率转换（推荐用于 44.1kHz 音频）
+xpuLoad song.flac | xpuPlay -a -
+xpuLoad 44100.wav | xpuPlay -a -
+
+# 指定重采样质量
+xpuLoad song.flac | xpuPlay -a -q sinc_best -      # 最高质量（默认）
+xpuLoad song.flac | xpuPlay -a -q sinc_medium -    # 中等质量
+xpuLoad song.flac | xpuPlay -a -q sinc_fastest -   # 最快速度
+
+# 显式指定 stdin（可选，与上面等效）
+xpuPlay -
+
+# 管道播放
+xpuLoad song.flac | xpuPlay -
+xpuLoad song.flac | xpuIn2Wav - | xpuPlay -
 
 # 指定设备
-xpuPlay --device alsa_output.pci-0000_00_1f.3.analog-stereo
+xpuPlay -d "扬声器 (Realtek(R) Audio)" -
+xpuPlay --device "扬声器 (Realtek(R) Audio)"
 
 # 缓冲大小
-xpuPlay --buffer-size 1024        # 1024 samples (默认)
-xpuPlay --buffer-size 2048        # 2048 samples (更稳定，更高延迟)
-xpuPlay --buffer-size 512         # 512 samples (更低延迟)
+xpuPlay -b 1024 -              # 1024 samples (更低延迟)
+xpuPlay -b 2048 -              # 2048 samples (默认，平衡)
+xpuPlay -b 4096 -              # 4096 samples (更稳定，更高延迟)
 
-# 输入 (stdin)
-# WAV 格式 PCM 数据
+# 列出可用设备
+xpuPlay -l
+xpuPlay --list-devices
+
+# 延迟测试
+xpuPlay -t
+xpuPlay --latency-test
+
+# 输入格式 (stdin)
+# [JSON metadata]\n[8-byte size header][PCM data]
+# JSON 元数据会被解析以获取采样率，然后播放 PCM 音频数据
 
 # 输出 (stdout)
-# 实时状态 JSON
-{"event": "playing", "position": 45.2}
-{"event": "finished", "position": 245.8}
-{"event": "error", "message": "Device not found"}
+# 实时状态 JSON (10Hz)
+{"state":1,"position":45.2,"buffer_fill":85,"latency_ms":42.5}
+{"state":2,"position":245.8,"buffer_fill":0,"latency_ms":0.0}
+
+# 播放事件
+{"event":"playback_started","latency_ms":42.5}
+{"event":"playback_stopped"}
+{"event":"buffer_underrun"}
 
 # 输出 (stderr)
 # 日志信息
 ```
+
+**WASAPI 音频后端实现（Windows）：**
+
+xpuPlay 在 Windows 上使用 WASAPI（Windows Audio Session API）实现低延迟音频播放。
+
+**WASAPI 模式：**
+
+| 模式 | 采样率 | 延迟 | 兼容性 | 状态 |
+|------|--------|------|--------|------|
+| **Exclusive Mode** | 精确匹配设备 | <10ms | 低（独占设备） | ⏳ Phase 2 |
+| **Shared Mode** | 自动转换 | ~40ms | 高（系统混音） | ✅ Phase 1 |
+
+**Shared Mode 工作原理（Phase 1 实现）：**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ WASAPI Shared Mode 音频流程                                 │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. 输入音频 (44.1kHz)                                      │
+│     │                                                        │
+│     ├─> xpuLoad 解码 → 32-bit float PCM                      │
+│     │                                                        │
+│  2. 格式检测                                                │
+│     │                                                        │
+│     ├─> 尝试 Exclusive Mode (44.1kHz)                       │
+│     │   └─> 失败（设备不支持）                              │
+│     │                                                        │
+│     └─> 回退到 Shared Mode                                  │
+│                                                             │
+│  3. Shared Mode 初始化                                      │
+│     │                                                        │
+│     ├─> 获取设备 Mix Format (48kHz, 32-bit float)           │
+│     ├─> 使用 Mix Format 初始化 WASAPI                       │
+│     └─> 返回 AudioFormatMismatch 信号                       │
+│                                                             │
+│  4. 自动重采样（libsamplerate）                             │
+│     │                                                        │
+│     ├─> 44.1kHz → 48kHz (ratio=1.088435)                   │
+│     └─> sinc_best 质量（可配置）                            │
+│                                                             │
+│  5. 音频数据写入                                            │
+│     │                                                        │
+│     ├─> 格式转换（32-bit float → 设备格式）                 │
+│     ├─> 支持：32-bit float, 32-bit int, 24-bit, 16-bit     │
+│     └─> 缓冲区管理（重试机制）                             │
+│                                                             │
+│  6. Windows 音频引擎                                        │
+│     │                                                        │
+│     └─> 系统混音器 → 音频设备                               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**关键实现细节：**
+
+1. **Mix Format 获取**：
+   ```cpp
+   // Shared Mode 必须使用设备的 mix format
+   WAVEFORMATEX* mix_format = nullptr;
+   audio_client->GetMixFormat(&mix_format);
+   // 通常返回：48000 Hz, 2 channels, 32-bit float
+   ```
+
+2. **格式不匹配检测**：
+   ```cpp
+   // 当请求格式 ≠ 设备格式时返回 AudioFormatMismatch
+   if (configured_sample_rate != requested_sample_rate) {
+       return ErrorCode::AudioFormatMismatch;
+   }
+   ```
+
+3. **音频数据格式转换**：
+   ```cpp
+   // 根据设备格式进行转换
+   if (is_float && bits == 32) {
+       memcpy(buffer, data, size);  // 直接复制
+   } else if (bits == 16) {
+       // float → int16 转换
+       for (sample : data) {
+           int16 = clamp(sample * 32767.0f);
+       }
+   }
+   ```
+
+4. **缓冲区写入重试**：
+   ```cpp
+   // 缓冲区满时等待事件并重试
+   for (retry = 0; retry < MAX_RETRIES; retry++) {
+       if (available_frames == 0) {
+           WaitForSingleObject(event_handle, 100ms);
+           continue;
+       }
+       WriteFrames();
+   }
+   ```
+
+**自动采样率转换：**
+
+当输入音频的采样率与音频设备不匹配时，可以使用 `-a` 选项启用自动重采样：
+
+```bash
+# 44.1kHz 音频自动转换为设备采样率（通常 48kHz）
+xpuLoad 44100.wav | xpuPlay -a -
+
+# 输出示例：
+# [2026-01-09 19:04:03.664] [xpu] [info] Input audio format: 44100 Hz, 2 channels
+# [2026-01-09 20:18:46.647] [xpu] [info] Attempting WASAPI Exclusive Mode (44100 Hz, 2 channels)
+# [2026-01-09 20:18:46.655] [xpu] [warning] Format 44100 Hz, 2 channels not supported in exclusive mode
+# [2026-01-09 20:18:46.656] [xpu] [warning] Exclusive mode failed, falling back to Shared Mode
+# [2026-01-09 20:18:46.688] [xpu] [info] Device mix format: 48000 Hz, 2 channels, 32 bits, tag=65534
+# [2026-01-09 20:18:46.897] [xpu] [info] Device format differs from requested format - returning AudioFormatMismatch
+# [2026-01-09 20:18:46.898] [xpu] [info]   Requested: 44100 Hz, 2 channels
+# [2026-01-09 20:18:46.898] [xpu] [info]   Actual: 48000 Hz, 2 channels (resampling required)
+# [2026-01-09 20:18:46.898] [xpu] [info] Auto-resampling enabled, will convert to device format
+# [2026-01-09 20:18:46.898] [xpu] [info] Auto-resampling: 44100 Hz -> 48000 Hz
+# [2026-01-09 20:18:46.899] [xpu] [info] Resampler initialized: ratio=1.088435, channels=2
+```
+
+**重采样质量选项：**
+
+| 质量 | 算法 | CPU 使用 | 音质 | 适用场景 |
+|------|------|---------|------|---------|
+| `sinc_best` | SRC_SINC_BEST_QUALITY | 高 | 最佳 | 专业音频欣赏（默认） |
+| `sinc_medium` | SRC_SINC_MEDIUM_QUALITY | 中 | 很好 | 日常播放 |
+| `sinc_fastest` | SRC_SINC_FASTEST | 低 | 好 | 低功耗设备 |
+
+**实现细节：**
+
+- **重采样库**：libsamplerate (Secret Rabbit Code)
+- **重采样模式**：实时重采样，逐块处理
+- **延迟影响**：<5ms 额外延迟（可忽略）
+- **内存开销**：~1MB（重采样缓冲区）
+- **支持的输入采样率**：任意（自动检测）
+- **输出采样率**：自动匹配设备 mix format
+- **格式转换**：自动检测设备格式并转换（32-bit float/int, 24-bit, 16-bit）
+
+**配置文件对应：**
+
+```toml
+# xpuSetting.conf
+[playback]
+device = "default"
+sample_rate = 48000              # 设备采样率（自动检测）
+channels = 2
+buffer_size = 2048
+latency_ms = 45
+
+auto_resample = true              # 启用自动重采样
+resample_quality = "sinc_best"    # sinc_best/sinc_medium/sinc_fastest
+
+[logging]
+level = info
+file = /var/log/xpu/xpu.log
+```
+
+**平台支持：**
+
+| 平台 | Audio Backend | 共享模式 | 独占模式 | 自动重采样 | 格式转换 |
+|------|--------------|---------|---------|-----------|---------|
+| Windows | WASAPI | ✅ | ⏳ Phase 2 | ✅ | ✅ |
+| macOS | CoreAudio | ✅ | ⏳ Phase 2 | ✅ | ✅ |
+| Linux | ALSA | ✅ | ⏳ Phase 2 | ✅ | ✅ |
+
+**性能目标：**
+
+- **播放延迟**：<50ms（2048 sample buffer @ 48kHz）
+- **重采样延迟**：<5ms 额外
+- **CPU 使用率**：<5%（含重采样）
+- **缓冲欠载**：0（正常播放）
+
+**使用建议：**
+
+1. **推荐使用 `-a` 选项**：自动处理采样率不匹配问题
+2. **高质量音频**：使用 `-q sinc_best`（默认）
+3. **低功耗场景**：使用 `-q sinc_fastest`
+4. **专业用途**：保持原始采样率，使用专业音频设备
 
 **网络播放：**
 

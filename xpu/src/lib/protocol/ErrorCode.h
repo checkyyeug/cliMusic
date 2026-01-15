@@ -86,6 +86,7 @@ enum class ErrorCode : int32_t {
     BufferOverrun = 83,
     DeviceNotFound = 76,
     AudioBackendError = 77,
+    AudioFormatMismatch = 81,
 
     // Cache errors (80-89)
     CacheMiss = 84,

@@ -56,13 +56,21 @@ public:
 private:
     static std::shared_ptr<spdlog::logger> createLogger() {
         try {
-            // Try to create colored stdout logger
-            auto logger = spdlog::stdout_color_mt("xpu");
+            // Create stderr sink explicitly to avoid stdout
+            auto stderr_sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
+            auto logger = std::make_shared<spdlog::logger>("xpu", stderr_sink);
             spdlog::register_logger(logger);
             return logger;
         } catch (...) {
-            // Fallback: just return the default logger
-            return spdlog::default_logger();
+            // Fallback: try stderr_color_mt
+            try {
+                auto logger = spdlog::stderr_color_mt("xpu");
+                spdlog::register_logger(logger);
+                return logger;
+            } catch (...) {
+                // Last resort: return the default logger
+                return spdlog::default_logger();
+            }
         }
     }
 };
