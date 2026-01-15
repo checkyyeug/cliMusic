@@ -22,7 +22,8 @@ struct DSFHeader {
     char id[4];              // 'D', 'S', 'D', ' '
     uint64_t chunk_size;     // Total chunk size
     uint64_t file_size;      // Total file size
-    uint32_t meta_offset;    // Metadata chunk offset
+    char id2[4];             // 'f', 'm', 't', ' '
+    uint64_t metadata_ptr;   // Metadata chunk offset
 };
 
 struct DSFFmtChunk {
