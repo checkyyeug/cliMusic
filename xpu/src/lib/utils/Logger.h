@@ -27,14 +27,40 @@ public:
 
     /**
      * @brief Initialize logger
+     * @param log_file Path to log file (not currently used)
+     * @param console Whether to enable console logging
+     * @param verbose Whether to enable verbose (debug) logging
+     * @param program_name Program name to include in log output (e.g., "xpuLoad", "xpuPlay")
      */
-    static void initialize(const std::string& log_file, bool console = true) {
+    static void initialize(const std::string& log_file, bool console = true, bool verbose = false, const std::string& program_name = "xpu") {
         (void)log_file;  // Suppress unused parameter warning
         (void)console;    // Suppress unused parameter warning
-        
+
         auto logger = getInstance();
-        spdlog::set_level(spdlog::level::debug);
+        // Set log level based on verbose flag
+        // verbose = true: show all logs (debug and above)
+        // verbose = false: only show warnings and errors
+        if (verbose) {
+            spdlog::set_level(spdlog::level::debug);
+        } else {
+            spdlog::set_level(spdlog::level::warn);
+        }
+
+        // Set custom pattern with program name
+        logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [" + program_name + "] [%^%l%$] %v");
         spdlog::set_default_logger(logger);
+    }
+
+    /**
+     * @brief Set log level dynamically
+     * @param verbose Whether to enable verbose (debug) logging
+     */
+    static void setVerbose(bool verbose) {
+        if (verbose) {
+            spdlog::set_level(spdlog::level::debug);
+        } else {
+            spdlog::set_level(spdlog::level::warn);
+        }
     }
 
     /**

@@ -98,12 +98,21 @@ int main(int argc, char* argv[]) {
         SetConsoleCP(CP_UTF8);
     #endif
 
-    // Initialize logger
-    utils::Logger::initialize(utils::PlatformUtils::getLogFilePath(), true);
+    // Parse command-line arguments (first pass to get verbose flag)
+    bool verbose = false;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-V") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            verbose = true;
+            break;
+        }
+    }
+
+    // Initialize logger with verbose setting
+    utils::Logger::initialize(utils::PlatformUtils::getLogFilePath(), true, verbose, "xpuIn2Wav");
 
     LOG_INFO("xpuIn2Wav starting");
 
-    // Parse command-line arguments
+    // Parse command-line arguments (second pass for all options)
     const char* input_file = nullptr;  // nullptr means stdin (default)
     const char* output_file = nullptr;  // User-specified output file
     int output_sample_rate = 0;  // 0 = keep original
@@ -113,7 +122,6 @@ int main(int argc, char* argv[]) {
     bool force = false;
     const char* cache_dir = nullptr;
     int fft_size = 2048;
-    bool verbose = false;
     bool streaming = false;     // Streaming mode
     int chunk_size = 4096;      // Default chunk size for streaming
 

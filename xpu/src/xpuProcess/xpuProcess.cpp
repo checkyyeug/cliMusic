@@ -32,6 +32,7 @@ void printUsage(const char* program_name) {
     std::cout << "\nOptions:\n";
     std::cout << "  -h, --help              Show this help message\n";
     std::cout << "  -v, --version           Show version information\n";
+    std::cout << "  -V, --verbose           Enable verbose output\n";
     std::cout << "  --volume <0-200>        Volume percentage (default: 100)\n";
     std::cout << "  --fade-in <ms>          Fade-in duration in ms\n";
     std::cout << "  --fade-out <ms>         Fade-out duration in ms\n";
@@ -46,9 +47,11 @@ void printUsage(const char* program_name) {
     std::cout << "  Writes JSON metadata + processed audio to stdout\n";
     std::cout << "  Output format: [JSON metadata][8-byte size header][PCM data]\n";
     std::cout << "\nExamples:\n";
-    std::cout << "  xpuLoad song.flac | xpuProcess --volume 80 | xpuPlay -\n";
-    std::cout << "  xpuLoad song.flac | xpuProcess --eq rock | xpuPlay -\n";
-    std::cout << "  xpuLoad song.flac | xpuProcess --fade-in 2000 --fade-out 3000 | xpuPlay -\n";
+    std::cout << "  xpuLoad song.flac | xpuProcess --volume 80 | xpuPlay\n";
+    std::cout << "  xpuLoad song.flac | xpuProcess --eq rock | xpuPlay\n";
+    std::cout << "  xpuLoad song.flac | xpuProcess --fade-in 2000 --fade-out 3000 | xpuPlay\n";
+    std::cout << "\nVerbose mode:\n";
+    std::cout << "  Use -V to enable debug logging (default: warnings and errors only)\n";
 }
 
 /**
@@ -109,8 +112,17 @@ int main(int argc, char* argv[]) {
     std::cin.tie(nullptr);
     std::cout.setf(std::ios::unitbuf);  // Force unbuffered output
 
-    // Initialize logger
-    utils::Logger::initialize("", false);  // Console only for xpuProcess
+    // Parse command-line arguments (first pass to get verbose flag)
+    bool verbose = false;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-V") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            verbose = true;
+            break;
+        }
+    }
+
+    // Initialize logger with verbose setting
+    utils::Logger::initialize("", false, verbose, "xpuProcess");  // Console only for xpuProcess
 
     float volume = 1.0f;
     int fade_in_ms = 0;
@@ -121,7 +133,7 @@ int main(int argc, char* argv[]) {
     float eq_high = 0.0f;
     bool use_custom_eq = false;
 
-    // Parse command-line arguments
+    // Parse command-line arguments (second pass for all options)
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             printUsage(argv[0]);
@@ -129,6 +141,9 @@ int main(int argc, char* argv[]) {
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
             printVersion();
             return 0;
+        } else if (strcmp(argv[i], "-V") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            // Already handled in first pass, ignore here
+            continue;
         } else if (strcmp(argv[i], "--volume") == 0) {
             if (i + 1 < argc) {
                 float vol_percent = static_cast<float>(std::atof(argv[++i]));

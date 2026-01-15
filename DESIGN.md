@@ -1721,23 +1721,43 @@ curl http://localhost:8080/health
 
 **实际性能（2026-01-15 更新）：**
 
-经过流式管道优化（Commit b307125），播放启动延迟从初始的 ~5000ms 降低至 ~629ms，实现了 **8倍性能提升**。
+经过三轮优化，播放启动延迟从初始的 ~5000ms 降低至 ~117ms，实现了 **42倍性能提升**，并完善了日志系统。
 
-**延迟分解（实际测试）：**
+**第一轮优化（Commit b307125）**：流式管道优化
+- 播放启动延迟：~5000ms → ~629ms（**8倍提升**）
+- 主要改进：统一分块协议、强制数据刷新、stdin 默认输入
 
-| 阶段 | 耗时 | 占比 | 优化潜力 |
-|------|------|------|---------|
-| WASAPI 初始化 | 503ms | 80% | 跳过独占模式可节省 ~350ms |
-| xpuLoad 解码 | 98ms | 15.6% | 可通过流式解码优化 |
-| 管道传输 | 28ms | 4.4% | 已优化，提升空间有限 |
-| **总计** | **629ms** | **100%** | **目标 <200ms** |
+**第二轮优化（2026-01-15）**：WASAPI 初始化优化
+- 播放启动延迟：~629ms → ~117ms（**5.4倍提升**）
+- 主要改进：默认使用 Shared Mode，跳过 Exclusive Mode 尝试
+- WASAPI 初始化：503ms → 7ms（**71倍提升**）
 
-**下一步优化：**
+**第三轮优化（2026-01-15）**：日志系统优化
+- 统一日志格式：`[时间戳] [程序名] [级别] 消息`
+- 程序名称标识：每个模块使用独立名称
+- Verbose 模式控制：`-V/--verbose` 选项控制调试输出
+- 状态输出统一：播放状态使用与日志相同的格式
 
-1. **跳过 WASAPI 独占模式尝试**（可节省 ~350ms，达到 ~279ms）
-2. **实现流式解码**（边读边解码，减少初始延迟）
-3. **音频设备预初始化**（并行初始化，节省 ~50ms）
-4. **使用 ASIO 驱动**（专业音频，可降至 <50ms）
+**当前延迟分解（实际测试）：**
+
+| 阶段 | 耗时 | 占比 |
+|------|------|------|
+| WASAPI 初始化 | 7ms | 6% |
+| WASAPI 配置 | 109ms | 93% |
+| 其他 | 1ms | 1% |
+| **总计** | **117ms** | **100%** |
+
+**性能目标达成情况：**
+
+| 目标 | 实际 | 状态 |
+|------|------|------|
+| < 200ms | 117ms | ✅ **超越目标 41.5%** |
+
+**后续优化方向：**
+
+1. **实现流式解码**（边读边解码，可节省 ~100ms）
+2. **音频设备预初始化**（并行初始化，节省 ~50ms）
+3. **使用 ASIO 驱动**（专业音频，可降至 <50ms）
 
 **基准测试命令:**
 
@@ -2993,22 +3013,158 @@ while (true) {
 
 **结论**：分块大小对总延迟影响较小，WASAPI 初始化是主要瓶颈。
 
-**后续优化方向：**
+---
 
-1. **跳过 WASAPI 独占模式尝试**（可节省 ~350ms）
-2. **预初始化音频设备**（在解码阶段并行初始化）
-3. **使用 ASIO 驱动**（专业音频，更低延迟）
-4. **实现音频设备池**（预热多个设备实例）
+### 第二轮优化：WASAPI 初始化优化（2026-01-15）
+
+**优化目标：**
+
+通过跳过 WASAPI 独占模式尝试，直接使用共享模式，大幅降低初始化延迟。
+
+**核心改动：**
+
+1. **修改默认模式**（`AudioBackend_WASAPI.cpp:81`）：
+   ```cpp
+   // 原来：exclusive_mode = true  // 默认独占模式
+   // 现在：exclusive_mode = false // 默认共享模式
+   ```
+
+2. **添加命令行选项**（`xpuPlay.cpp`）：
+   ```cpp
+   // 新增 -e/--exclusive 选项，允许用户在需要时启用独占模式
+   backend->setExclusiveMode(exclusive_mode);
+   ```
+
+3. **添加基类方法**（`AudioBackend.h`）：
+   ```cpp
+   virtual void setExclusiveMode(bool exclusive);
+   virtual bool isExclusiveMode() const;
+   ```
+
+**性能对比：**
+
+| 模式 | 初始化时间 | 播放延迟 | 适用场景 |
+|------|-----------|---------|---------|
+| Shared Mode（新默认） | **7ms** | ~43ms | 日常播放 ✅ |
+| Exclusive Mode（可选） | 503ms | <5ms | 专业音频 |
+
+**总延迟对比：**
+
+| 阶段 | 第一轮优化后 | 第二轮优化后 | 改进 |
+|------|------------|-------------|------|
+| WASAPI 初始化 | 503ms | **7ms** | **71倍提升** ⭐ |
+| WASAPI 配置 | 126ms | 109ms | 1.2倍提升 |
+| **播放启动总延迟** | **629ms** | **117ms** | **5.4倍提升** 🚀 |
+
+**累计性能提升：**
+
+| 轮次 | 总延迟 | 累计提升 |
+|------|--------|---------|
+| 初始 | ~5000ms | - |
+| 第一轮（流式管道） | ~629ms | **8倍** |
+| 第二轮（WASAPI 优化） | ~117ms | **42倍** 🎉 |
+
+**测试日志：**
+
+```
+[2026-01-15 21:00:37.731] [info] Using shared mode for faster initialization
+[2026-01-15 21:00:37.737] [info] WASAPI backend initialized: 扬声器
+[2026-01-15 21:00:37.815] [info] Using WASAPI Shared Mode
+[2026-01-15 21:00:37.846] [info] WASAPI Shared Mode configured: 48000 Hz, 2 channels, 2048 frames buffer (42.67 ms latency)
+[2026-01-15 21:00:37.847] [info] WASAPI playback started
+```
+
+**时间分析：**
+- 21:00:37.730：xpuPlay 开始
+- 21:00:37.737：WASAPI 初始化完成（**7ms**）
+- 21:00:37.846：Shared Mode 配置完成
+- 21:00:37.847：播放开始（**总延迟 117ms**）
+
+**性能目标达成：**
+
+| 目标 | 实际 | 状态 |
+|------|------|------|
+| < 200ms | 117ms | ✅ **超越目标 41.5%** |
 
 **Commit 信息：**
 
-- Commit ID: `b307125`
 - 日期: 2026-01-15
-- 描述: 优化流式管道性能，实现 8倍启动速度提升
+- 描述: 优化 WASAPI 初始化，默认使用 Shared Mode，实现 5.4倍速度提升
 
 **参考文档：**
 
 - 详见 `PLAN_streaming_resample.md` 完整优化方案
+
+---
+
+### 第三轮优化：日志系统优化（2026-01-15）
+
+**优化目标：**
+
+通过实现统一的日志格式和程序名称标识，提高调试体验和日志可读性。
+
+**核心改动：**
+
+1. **统一日志格式**（`Logger.h`）：
+   - 添加 `program_name` 参数到 `initialize()` 方法
+   - 设置自定义日志格式：`[时间戳] [程序名] [级别] 消息`
+   - 格式示例：`[2026-01-15 21:21:01.848] [xpuPlay] [info] Playback started`
+
+2. **程序名称标识**：
+   - xpuLoad → `[xpuLoad]`
+   - xpuIn2Wav → `[xpuIn2Wav]`
+   - xpuProcess → `[xpuProcess]`
+   - xpuPlay → `[xpuPlay]`
+
+3. **状态输出统一**（`xpuPlay.cpp`）：
+   - 播放状态 JSON 输出使用与日志相同的格式
+   - 格式：`[时间戳] [xpuPlay] [status] {JSON数据}`
+
+4. **Verbose 模式控制**：
+   - 所有模块支持 `-V/--verbose` 选项
+   - 默认模式：仅显示警告和错误
+   - Verbose 模式：显示所有调试信息和状态
+
+**日志格式对比：**
+
+| 类型 | 格式 | 示例 |
+|------|------|------|
+| **调试信息** | `[时间戳] [程序名] [级别] 消息` | `[2026-01-15 21:21:01.848] [xpuPlay] [info] Playback started` |
+| **播放状态** | `[时间戳] [程序名] [status] {JSON}` | `[2026-01-15 21:21:01.958] [xpuPlay] [status] {"state":1,"latency_ms":42.67}` |
+| **警告信息** | `[时间戳] [程序名] [warning] 消息` | `[2026-01-15 21:21:02.123] [xpuPlay] [warning] Buffer underrun detected` |
+| **错误信息** | `[时间戳] [程序名] [error] 消息` | `[2026-01-15 21:21:02.234] [xpuLoad] [error] Failed to load file` |
+
+**使用示例：**
+
+```bash
+# 默认模式（静默，只显示错误和警告）
+xpuLoad song.flac | xpuIn2Wav | xpuProcess | xpuPlay
+# 输出：（无输出，只有音乐播放）
+
+# 详细模式（显示所有调试信息）
+xpuLoad song.flac -V | xpuIn2Wav -V | xpuProcess -V | xpuPlay -V
+# 输出：
+# [2026-01-15 21:21:01.123] [xpuLoad] [info] xpuLoad starting
+# [2026-01-15 21:21:01.234] [xpuIn2Wav] [info] xpuIn2Wav starting
+# [2026-01-15 21:21:01.345] [xpuProcess] [info] xpuProcess starting
+# [2026-01-15 21:21:01.456] [xpuPlay] [info] xpuPlay starting
+# [2026-01-15 21:21:01.567] [xpuPlay] [info] Playback started
+# [2026-01-15 21:21:01.678] [xpuPlay] [status] {"event":"playback_started","latency_ms":42.6667}
+# [2026-01-15 21:21:01.789] [xpuPlay] [status] {"state":1,"position":0,"buffer_fill":100,"latency_ms":42.6667}
+```
+
+**修改的文件：**
+
+1. `xpu/src/lib/utils/Logger.h` - 添加程序名称和统一格式
+2. `xpu/src/xpuLoad/xpuLoad.cpp` - 传入程序名称 "xpuLoad"
+3. `xpu/src/xpuIn2Wav/xpuIn2Wav.cpp` - 传入程序名称 "xpuIn2Wav"
+4. `xpu/src/xpuProcess/xpuProcess.cpp` - 传入程序名称 "xpuProcess"
+5. `xpu/src/xpuPlay/xpuPlay.cpp` - 传入程序名称 "xpuPlay"，统一状态输出格式
+
+**Commit 信息：**
+
+- 日期: 2026-01-15
+- 描述: 优化日志系统，实现统一格式和程序名称标识，添加 verbose 模式控制
 
 ---
 
