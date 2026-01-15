@@ -3253,6 +3253,90 @@ xpuLoad song.flac -V | xpuIn2Wav -V | xpuProcess -V | xpuPlay -V
 
 ---
 
+### 第五轮优化：消除中间 Buffer（2026-01-15）
+
+**优化目标：**
+
+通过消除不必要的 memcpy 和中间 buffer，进一步提升内存效率。
+
+**核心问题：**
+
+1. **xpuIn2Wav - 不必要的 memcpy**
+   - 读取 size header 时使用中间 buffer
+   - 使用 `std::move()` 导致 buffer 容量丢失
+
+2. **xpuProcess - 冗余的 buffer 复制**
+   - 每个分块都从 `audio_buffer` 复制到 `processed_buffer`
+   - 实际上可以直接在 `audio_buffer` 上处理
+
+**优化方案：**
+
+1. **xpuIn2Wav streaming 模式优化**（`FormatConverter.cpp:1154-1215`）：
+
+   **优化前**：
+   ```cpp
+   char size_buffer[8];
+   std::cin.read(size_buffer, 8);
+   std::memcpy(&chunk_input_size, size_buffer, 8);  // 不必要的 memcpy
+
+   output_buffer = std::move(resampled_buffer);  // 丢失容量
+   ```
+
+   **优化后**：
+   ```cpp
+   // 直接读取到 uint64_t，避免中间 buffer
+   std::cin.read(reinterpret_cast<char*>(&chunk_input_size), sizeof(chunk_input_size));
+
+   // 使用 swap 保留容量
+   output_buffer.swap(resampled_buffer);
+   ```
+
+2. **xpuProcess 优化**（`xpuProcess.cpp:309-364`）：
+
+   **优化前**：
+   ```cpp
+   std::vector<float> audio_buffer;
+   std::vector<float> processed_buffer;  // 不必要的 buffer
+
+   std::memcpy(processed_buffer.data(), audio_buffer.data(), data_size);  // 冗余复制
+   volume_ctrl.process(processed_buffer.data(), ...);  // 在 processed_buffer 上处理
+   std::cout.write(reinterpret_cast<const char*>(processed_buffer.data()), ...);
+   ```
+
+   **优化后**：
+   ```cpp
+   std::vector<float> audio_buffer;  // 只需要一个 buffer
+
+   // 直接在 audio_buffer 上处理，无需 memcpy
+   volume_ctrl.process(audio_buffer.data(), ...);
+   std::cout.write(reinterpret_cast<const char*>(audio_buffer.data()), ...);
+   ```
+
+**优化效果：**
+
+| 优化项 | 优化前 | 优化后 | 改进 |
+|--------|--------|--------|------|
+| xpuIn2Wav memcpy/chunk | 2 次 | 1 次 | **50%** |
+| xpuProcess memcpy/chunk | 1 次 | 0 次 | **100%** ⭐ |
+| Buffer 容量保留 | 否 | 是 | **避免重新分配** |
+| 内存占用 | 2x buffer | 1x buffer | **50%** 🚀 |
+
+**修改的文件：**
+
+1. `xpu/src/xpuIn2Wav/FormatConverter.cpp` - 消除 size_buffer，使用 swap 保留容量
+2. `xpu/src/xpuProcess/xpuProcess.cpp` - 移除 processed_buffer，直接处理
+
+**Commit 信息：**
+
+- 日期: 2026-01-15
+- 描述: 消除中间 buffer，减少 50-100% memcpy，降低内存占用
+
+**参考文档：**
+
+- 详见 `PLAN_memory_optimization.md` Phase 2 完整方案
+
+---
+
 #### 3.2.3 xpuFingerprint (音频指纹)
 
 生成音频的唯一指纹标识，用于重复检测、版权识别和音乐匹配。

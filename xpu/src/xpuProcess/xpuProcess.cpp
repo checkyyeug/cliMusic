@@ -313,11 +313,9 @@ int main(int argc, char* argv[]) {
     constexpr size_t MAX_CHANNELS = 8;  // Support up to 8 channels
 
     std::vector<float> audio_buffer;
-    std::vector<float> processed_buffer;
 
-    // Pre-allocate buffers to avoid frequent reallocations
+    // Pre-allocate buffer to avoid frequent reallocations
     audio_buffer.reserve(MAX_SAMPLES);
-    processed_buffer.reserve(MAX_SAMPLES);
 
     uint64_t total_samples = 0;
     uint64_t total_frames_processed = 0;
@@ -336,7 +334,6 @@ int main(int argc, char* argv[]) {
 
         // Resize buffers (using reserve ensures no reallocation if size <= capacity)
         audio_buffer.resize(samples);
-        processed_buffer.resize(samples);
 
         std::cin.read(reinterpret_cast<char*>(audio_buffer.data()), data_size);
 
@@ -344,27 +341,25 @@ int main(int argc, char* argv[]) {
             break;
         }
 
-        // Copy to processed buffer
-        std::memcpy(processed_buffer.data(), audio_buffer.data(), data_size);
-
         // Calculate frames
         size_t frames = samples / input_channels;
 
+        // Apply DSP effects directly to audio_buffer (no memcpy needed)
         // Apply fade-in
         if (fade_in_active && !fade_effects.isComplete()) {
-            fade_effects.process(processed_buffer.data(), static_cast<int>(frames), input_channels);
+            fade_effects.process(audio_buffer.data(), static_cast<int>(frames), input_channels);
         }
 
         // Apply volume control
-        volume_ctrl.process(processed_buffer.data(), static_cast<int>(frames), input_channels);
+        volume_ctrl.process(audio_buffer.data(), static_cast<int>(frames), input_channels);
 
         // Apply EQ
-        eq.process(processed_buffer.data(), static_cast<int>(frames), input_channels, input_sample_rate);
+        eq.process(audio_buffer.data(), static_cast<int>(frames), input_channels, input_sample_rate);
 
         // Write processed audio to stdout
         uint64_t output_size = samples * sizeof(float);
         std::cout.write(reinterpret_cast<const char*>(&output_size), sizeof(output_size));
-        std::cout.write(reinterpret_cast<const char*>(processed_buffer.data()), output_size);
+        std::cout.write(reinterpret_cast<const char*>(audio_buffer.data()), output_size);
         std::cout.flush();
         #ifdef PLATFORM_WINDOWS
         _flushall();  // Force flush all streams on Windows

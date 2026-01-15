@@ -1153,11 +1153,10 @@ ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
 
     // ===== Phase 3: Process chunks in a loop =====
     while (true) {
-        // Read chunk size header (8 bytes)
+        // Read chunk size header (8 bytes) - directly into uint64_t to avoid memcpy
         uint64_t chunk_input_size = 0;
-        char size_buffer[8];
 
-        if (!std::cin.read(size_buffer, 8)) {
+        if (!std::cin.read(reinterpret_cast<char*>(&chunk_input_size), sizeof(chunk_input_size))) {
             // EOF or error
             if (std::cin.eof()) {
                 LOG_INFO("End of input stream reached");
@@ -1167,8 +1166,6 @@ ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
                 return ErrorCode::FileReadError;
             }
         }
-
-        std::memcpy(&chunk_input_size, size_buffer, 8);
 
         if (chunk_input_size == 0) {
             LOG_INFO("Received zero-size chunk, ending stream");
@@ -1187,7 +1184,7 @@ ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
         // Resize input buffer
         input_buffer.resize(input_samples);
 
-        // Read chunk data
+        // Read chunk data directly into input_buffer
         if (!std::cin.read(reinterpret_cast<char*>(input_buffer.data()), chunk_input_size)) {
             LOG_ERROR("Failed to read chunk {} data ({} bytes)", chunk_count + 1, chunk_input_size);
             return ErrorCode::FileReadError;
@@ -1210,10 +1207,11 @@ ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
                          chunk_count, input_frames, output_frames);
             }
 
-            output_buffer = std::move(resampled_buffer);
+            // Swap instead of move to preserve buffer capacity for next iteration
+            output_buffer.swap(resampled_buffer);
         } else {
-            // No resampling needed, just move the data
-            output_buffer = std::move(input_buffer);
+            // No resampling needed, swap to preserve buffer capacity
+            output_buffer.swap(input_buffer);
         }
 
         // Convert channels if needed

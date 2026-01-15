@@ -223,12 +223,22 @@ ms_print memory.profile
    - 使用 reserve() 避免频繁重新分配
 3. ✅ 测试和验证 - 构建成功
 
-### Phase 2: 消除中间 Buffer（2-3小时）
-1. 修改 xpuIn2Wav 直接读取到目标 buffer
-2. 优化 xpuProcess buffer 复用
-3. 测试和验证
+### Phase 2: 消除中间 Buffer（已完成）
+1. ✅ xpuIn2Wav 优化
+   - 消除 size_buffer，直接读取到 uint64_t（避免 memcpy）
+   - 使用 swap() 替代 move() 保留 buffer 容量
+2. ✅ xpuProcess 优化
+   - 移除不必要的 processed_buffer
+   - 直接在 audio_buffer 上进行 DSP 处理
+   - 消除每个分块的 memcpy
+3. ✅ 测试和验证 - 构建成功
 
-### Phase 3: 流式解码（5-10小时）
+**预期改进**:
+- 消除中间 buffer
+- 每个 chunk 减少 1-2 次 memcpy
+- 降低内存占用 50%
+
+### Phase 3: 流式解码（待实施）
 1. 设计 StreamingAudioFileLoader 接口
 2. 实现 FFmpeg 流式解码
 3. 迁移 xpuLoad 使用新接口
