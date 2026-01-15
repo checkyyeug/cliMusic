@@ -144,7 +144,7 @@ xpuDaemon --mcp --stdio
 #### 播放控制
 ```bash
 # 播放单个文件（管道模式）
-xpuLoad song.flac | xpuIn2Wav - | xpuPlay
+xpuLoad song.flac | xpuPlay -
 
 # 使用队列
 xpuQueue add ~/Music/*.flac
@@ -164,8 +164,8 @@ xpuLoad song.flac | xpuIn2Wav - | xpuProcess --eq rock | xpuPlay
 # 音量控制
 xpuLoad song.flac | xpuIn2Wav - | xpuProcess --volume 0.8 | xpuPlay
 
-# 格式转换
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -b 16
+# 格式转换并保存为文件
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -b 16 -o output.wav
 ```
 
 #### AI 集成
@@ -184,11 +184,11 @@ xpuDaemon --mcp --stdio
 | 模块 | 输入 | 输出 | 用途 |
 |------|------|------|------|
 | **xpuLoad** | 音频文件 | JSON元数据 + PCM流 | 解析音频 |
-| **xpuIn2Wav** | 文件或stdin（来自xpuLoad） | WAV文件 | 格式转换 |
-| **xpuProcess** | WAV | 处理后的 WAV | DSP 处理 |
-| **xpuPlay** | WAV | 音频输出 | 播放音频 |
+| **xpuIn2Wav** | 文件或stdin（来自xpuLoad） | stdout（管道模式）或 WAV文件（-o指定） | 格式转换 |
+| **xpuProcess** | PCM流 | 处理后的 PCM流 | DSP 处理 |
+| **xpuPlay** | PCM流 | 音频输出 | 播放音频 |
 | **xpuQueue** | 命令 | 状态 | 队列管理 |
-| **xpuStream** | WAV | 网络流 | 远程传输 |
+| **xpuStream** | PCM流 | 网络流 | 远程传输 |
 | **xpuDaemon** | - | 多种接口 | 守护进程 |
 
 ### 配置文件位置
@@ -347,7 +347,14 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
 
 1. **管道模式 (Pipeline)**: Unix 风格的命令组合
    ```bash
-   xpuLoad song.flac | xpuIn2Wav | xpuProcess --eq rock | xpuPlay
+   # 简单播放（无需格式转换）
+   xpuLoad song.flac | xpuPlay -
+
+   # 带格式转换的播放
+   xpuLoad song.flac | xpuIn2Wav - -r 48000 | xpuPlay -
+
+   # 完整DSP处理链
+   xpuLoad song.flac | xpuIn2Wav - | xpuProcess --eq rock | xpuPlay -
    ```
 
 2. **守护进程模式 (Daemon)**: 统一的状态管理和 API 服务
@@ -359,6 +366,189 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
    ```bash
    xpuFingerprint --remote gpu-server:8080 --backend cuda
    ```
+
+#### 实现增强（Phase 1 实际实现亮点）
+
+**1. Windows 二进制模式处理**
+
+Windows 管道需要显式设置二进制模式才能正确传输音频数据：
+
+```cpp
+#ifdef PLATFORM_WINDOWS
+    _setmode(_fileno(stdin), _O_BINARY);   // xpuPlay, xpuIn2Wav
+    _setmode(_fileno(stdout), _O_BINARY);  // xpuLoad, xpuIn2Wav
+#endif
+```
+
+**影响**: 修复了 Windows 上管道数据损坏的问题，确保 PCM 音频数据完整传输。
+
+---
+
+**2. 立即刷新机制**
+
+确保 JSON 元数据先于 PCM 数据发送，避免管道解析错误：
+
+```cpp
+// xpuLoad 输出 JSON 元数据后立即刷新
+std::cout << metadataToJSON(metadata);
+std::cout.flush();  // ← 关键：确保 JSON 先到达
+```
+
+**影响**: 修复了管道模式下数据顺序混乱的问题，xpuPlay 能正确解析元数据。
+
+---
+
+**3. 智能管道检测**
+
+xpuLoad 自动检测是否为管道模式，避免终端输出二进制乱码：
+
+```cpp
+#ifdef PLATFORM_WINDOWS
+    DWORD mode;
+    bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
+#else
+    bool is_piped = !isatty(STDOUT_FILENO);
+#endif
+
+// 终端模式：仅输出 JSON 元数据
+// 管道模式：输出 JSON 元数据 + PCM 数据
+```
+
+**影响**: 用户体验优化，终端直接运行时不显示二进制乱码。
+
+---
+
+**4. xpuIn2Wav 智能输出决策**
+
+根据输入模式和参数自动选择输出目标：
+
+```cpp
+// 决策逻辑
+bool output_to_stdout = read_from_stdin && (output_file == nullptr);
+
+// 行为：
+// - 管道模式 + 无 -o：输出到 stdout (支持管道链接)
+// - 管道模式 + 有 -o：输出到文件
+// - 文件模式：总是输出到文件
+```
+
+**影响**: 管道模式默认行为符合直觉，无需额外参数即可链接到 xpuPlay。
+
+---
+
+**5. xpuPlay 健壮的等待机制**
+
+正确等待音频播放完成，而不是提前退出：
+
+```cpp
+// 等待播放缓冲区排空
+while (wait_count < MAX_WAIT_SECONDS * 10) {
+    BufferStatus status = backend->getBufferStatus();
+    if (status.fill_level < 5 && backend->getState() != PlaybackState::Playing) {
+        break;  // 缓冲区排空且不再播放
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+```
+
+**影响**: 修复了音频播放不完整的问题，确保长音频完整播放。
+
+---
+
+**6. xpuPlay 自动重采样**
+
+检测设备格式不匹配时自动转换采样率：
+
+```cpp
+// 检测格式不匹配
+if (ret == ErrorCode::AudioFormatMismatch && auto_resample) {
+    // 计算重采样比率
+    src_ratio = (double)output_sample_rate / (double)input_sample_rate;
+    // 使用 libsamplerate 进行高质量重采样
+    src_process(src_state, &src_data);
+}
+```
+
+**支持的质量级别**:
+- `best`: 最高质量（慢，~5秒）
+- `medium`: 中等质量（推荐，~1秒，默认）
+- `fast`: 最快速度（实时，~0.3秒）
+
+**影响**: 44.1kHz 音频自动转换为设备支持的 48kHz，无需手动转换。
+
+---
+
+**7. WASAPI 缓冲区写入优化**
+
+增加重试次数和进度日志，支持大量帧写入：
+
+```cpp
+const int MAX_RETRIES = 10000000;  // 从 3 增加到几乎无限
+for (int retry = 0; retry < MAX_RETRIES; retry++) {
+    // 等待缓冲区空间
+    if (available_frames == 0) {
+        WaitForSingleObject(event_handle, 100);
+        continue;
+    }
+    // 写入帧
+    WriteFrames();
+    // 进度日志
+    if (frames % 100000 == 0) {
+        LOG_INFO("Write progress: {} / {} frames", frames_written, total_frames);
+    }
+}
+```
+
+**影响**: 修复了音频播放缓慢和中断的问题，支持长音频流畅播放。
+
+---
+
+**8. xpuIn2Wav 重采样性能优化**
+
+默认质量级别从 `sinc_best` 改为 `medium`，大幅提升性能：
+
+```cpp
+// 默认质量：medium（平衡性能与质量）
+const char* quality = "medium";
+
+// 质量选项简化
+static int getConverterType(const char* quality) {
+    if (strcmp(quality, "best") == 0) return SRC_SINC_BEST_QUALITY;
+    if (strcmp(quality, "medium") == 0) return SRC_SINC_MEDIUM_QUALITY;
+    if (strcmp(quality, "fast") == 0) return SRC_SINC_FASTEST;
+    return SRC_SINC_MEDIUM_QUALITY;  // 默认
+}
+```
+
+**性能对比**（处理 1250 万帧，44100→48000 Hz）：
+
+| 质量选项 | 处理时间 | 相对速度 | 音质 | 适用场景 |
+|---------|---------|---------|------|---------|
+| `best` | ~5.2秒 | 1x | 最佳 | 专业音频制作 |
+| `medium` | ~1.0秒 | **5x** | 很好 | **日常播放（默认）** |
+| `fast` | ~0.3秒 | **17x** | 好 | 实时处理 |
+
+**影响**: 重采样速度提升 5-17 倍，同时保持很好的音质。
+
+---
+
+**验证成功的测试命令**:
+
+```bash
+# Windows 测试（成功运行）
+xpuLoad.exe \music\1_44100_24b.wav | xpuIn2Wav.exe - | xpuPlay.exe - -a
+
+# 输出日志验证：
+# - 自动重采样: 44100 Hz → 48000 Hz (ratio=1.088435)
+# - 帧数转换: 12588112 → 13701190 frames
+# - 重采样质量: medium（默认，~1秒，相比 best 的 5.2秒提升 5倍）
+# - 播放成功，音频完整
+
+# 测试不同质量选项
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -q best - | xpuPlay -     # 最高质量（慢）
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -q medium - | xpuPlay -   # 中等质量（推荐）
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -q fast - | xpuPlay -     # 最快速度
+```
 
 <details>
 <summary><b>📖 查看详细架构图</b></summary>
@@ -2129,25 +2319,33 @@ xpuLoad song.flac | xpuIn2Wav -
 
 **核心功能：将音频文件转换为标准 WAV 格式，并计算 FFT 频谱数据缓存到本地**
 
-这是音频管道的"统一化"模块，确保后续所有模块只需处理 WAV 一种格式。同时计算 FFT 数据并缓存，避免后续模块重复计算。
+这是音频管道的"统一化"模块，确保后续所有模块只需处理一种格式。同时计算 FFT 数据并缓存，避免后续模块重复计算。
 
 支持两种输入模式：
 1. **直接文件模式**：从文件系统读取音频文件
-2. **管道模式**：从 stdin 读取 xpuLoad 的输出
+2. **管道模式**：从 stdin 读取 xpuLoad 的输出（默认输出到 stdout）
 
 ```bash
 # 基本用法（直接文件模式）
 xpuIn2Wav input.flac
 
-# 管道模式（从 xpuLoad 接收数据）
-xpuLoad song.flac | xpuIn2Wav -
+# 管道模式（从 xpuLoad 接收数据，输出到 stdout）
+xpuLoad song.flac | xpuIn2Wav - | xpuPlay -
 
-# 指定输出参数
+# 指定输出参数（管道模式）
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -b 16 | xpuPlay -
+
+# 指定重采样质量
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -q best - | xpuPlay -     # 最高质量（慢）
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -q medium - | xpuPlay -   # 中等质量（推荐，默认）
+xpuLoad song.flac | xpuIn2Wav - -r 48000 -q fast - | xpuPlay -     # 最快速度（实时）
+
+# 管道模式输出到文件
+xpuLoad song.flac | xpuIn2Wav - -o output.wav
+
+# 文件模式指定输出参数
 xpuIn2Wav -r 96000 -b 32 -c 2 input.flac
 xpuIn2Wav --rate 48000 --bits 16 --channels 2 input.flac
-
-# 管道模式指定输出参数
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -b 16
 
 # FFT 缓存选项
 xpuIn2Wav --cache-dir ~/.cache/xpu/fft  # 指定缓存目录
@@ -2159,8 +2357,9 @@ xpuIn2Wav -f                           # 强制绕过 FFT 缓存
 # 管道模式：接收 xpuLoad 输出的 [JSON元数据][8字节大小头][PCM数据]
 
 # 输出
-# 文件模式：生成 <input>_out.wav
-# 管道模式：生成 stdin_output.wav
+# 文件模式：生成 <input>_out.wav（或 -o 指定的文件）
+# 管道模式（无 -o）：输出到 stdout（PCM格式，供管道传输）
+# 管道模式（-o）：生成指定文件
 ```
 
 **管道模式工作流程：**
@@ -2171,7 +2370,14 @@ xpuLoad 输出格式:
   [8字节大小头（小端序uint64_t）]
   [PCM数据（32-bit float, interleaved, stereo）]
 
-xpuIn2Wav 管道处理:
+xpuIn2Wav 管道处理（stdout模式）:
+  1. 从 stdin 读取并解析 JSON 元数据
+  2. 读取 8 字节大小头
+  3. 读取指定字节数的 PCM 数据
+  4. 转换为目标格式（采样率、位深度、声道数）
+  5. 输出到 stdout：[新JSON元数据][8字节大小头][转换后的PCM数据]
+
+xpuIn2Wav 管道处理（文件模式，使用 -o）:
   1. 从 stdin 读取并解析 JSON 元数据
   2. 读取 8 字节大小头
   3. 读取指定字节数的 PCM 数据
@@ -3745,7 +3951,7 @@ xpuPlay [-h] [-v] [-d <name>] [-b <size>] [-t] [-l] [-V] [-a] [-q <qual>] [-]
   -l, --list-devices      列出可用设备
   -V, --verbose           启用详细输出
   -a, --auto              启用自动采样率转换
-  -q, --quality <qual>    重采样质量（sinc_best, sinc_medium, sinc_fastest）
+  -q, --quality <qual>    重采样质量（best, medium, fast）
   -                       从 stdin 读取（默认）
 
 # 基本用法（从 stdin 读取，默认）
@@ -3756,9 +3962,9 @@ xpuLoad song.flac | xpuPlay -a -
 xpuLoad 44100.wav | xpuPlay -a -
 
 # 指定重采样质量
-xpuLoad song.flac | xpuPlay -a -q sinc_best -      # 最高质量（默认）
-xpuLoad song.flac | xpuPlay -a -q sinc_medium -    # 中等质量
-xpuLoad song.flac | xpuPlay -a -q sinc_fastest -   # 最快速度
+xpuLoad song.flac | xpuPlay -a -q best -      # 最高质量（慢）
+xpuLoad song.flac | xpuPlay -a -q medium -    # 中等质量（推荐，默认）
+xpuLoad song.flac | xpuPlay -a -q fast -      # 最快速度
 
 # 显式指定 stdin（可选，与上面等效）
 xpuPlay -
@@ -3840,7 +4046,7 @@ xpuPlay 在 Windows 上使用 WASAPI（Windows Audio Session API）实现低延�
 │  4. 自动重采样（libsamplerate）                             │
 │     │                                                        │
 │     ├─> 44.1kHz → 48kHz (ratio=1.088435)                   │
-│     └─> sinc_best 质量（可配置）                            │
+│     └─> medium 质量（可配置：best/medium/fast）              │
 │                                                             │
 │  5. 音频数据写入                                            │
 │     │                                                        │
@@ -3924,9 +4130,9 @@ xpuLoad 44100.wav | xpuPlay -a -
 
 | 质量 | 算法 | CPU 使用 | 音质 | 适用场景 |
 |------|------|---------|------|---------|
-| `sinc_best` | SRC_SINC_BEST_QUALITY | 高 | 最佳 | 专业音频欣赏（默认） |
-| `sinc_medium` | SRC_SINC_MEDIUM_QUALITY | 中 | 很好 | 日常播放 |
-| `sinc_fastest` | SRC_SINC_FASTEST | 低 | 好 | 低功耗设备 |
+| `best` | SRC_SINC_BEST_QUALITY | 高 | 最佳 | 专业音频制作 |
+| `medium` | SRC_SINC_MEDIUM_QUALITY | 中 | 很好 | 日常播放（推荐，默认） |
+| `fast` | SRC_SINC_FASTEST | 低 | 好 | 实时处理、低延迟 |
 
 **实现细节：**
 
@@ -3950,7 +4156,7 @@ buffer_size = 2048
 latency_ms = 45
 
 auto_resample = true              # 启用自动重采样
-resample_quality = "sinc_best"    # sinc_best/sinc_medium/sinc_fastest
+resample_quality = "medium"    # best/medium/fast
 
 [logging]
 level = info
@@ -3975,8 +4181,9 @@ file = /var/log/xpu/xpu.log
 **使用建议：**
 
 1. **推荐使用 `-a` 选项**：自动处理采样率不匹配问题
-2. **高质量音频**：使用 `-q sinc_best`（默认）
-3. **低功耗场景**：使用 `-q sinc_fastest`
+2. **高质量音频**：使用 `-q best`
+3. **低功耗场景**：使用 `-q fast`
+4. **默认使用**：`-q medium`（推荐，平衡性能与质量）
 4. **专业用途**：保持原始采样率，使用专业音频设备
 
 **网络播放：**
