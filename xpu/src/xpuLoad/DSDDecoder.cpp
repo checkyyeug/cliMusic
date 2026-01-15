@@ -20,10 +20,10 @@ namespace load {
 #pragma pack(push, 1)
 struct DSFHeader {
     char id[4];              // 'D', 'S', 'D', ' '
-    uint64_t chunk_size;     // Total chunk size
+    uint64_t chunk_size;     // Total chunk size (always 28)
+    uint32_t padding1;       // Padding (4 bytes)
     uint64_t file_size;      // Total file size
-    char id2[4];             // 'f', 'm', 't', ' '
-    uint64_t metadata_ptr;   // Metadata chunk offset
+    uint32_t padding2;       // Padding (4 bytes)
 };
 
 struct DSFFmtChunk {
