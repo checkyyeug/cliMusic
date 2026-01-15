@@ -47,12 +47,44 @@ struct DSFDataChunk {
 #pragma pack(pop)
 
 /**
- * @brief DSDIFF format header (simplified)
+ * @brief DSDIFF format header
  */
 struct DSDIFFHeader {
     char id[4];              // 'F', 'R', 'M', '8'
-    uint32_t chunk_size;     // Chunk size
+    uint32_t chunk_size;     // Chunk size (excluding header)
     char type[4];            // 'D', 'S', 'D', ' '
+};
+
+/**
+ * @brief DSDIFF chunk header
+ */
+struct DSDIFFChunkHeader {
+    char id[4];              // Chunk ID (e.g., 'prop', 'DSD ')
+    uint32_t chunk_size;     // Chunk size (excluding header)
+};
+
+/**
+ * @brief DSDIFF property chunk (simplified)
+ */
+struct DSDIFFPropChunk {
+    char id[4];              // 'p', 'r', 'o', 'p'
+    uint32_t chunk_size;     // Chunk size
+    uint16_t version;        // Version
+    uint32_t sample_rate;    // Sample rate (Hz)
+    uint16_t channels;       // Number of channels
+    uint16_t bits_per_sample;// Bits per sample (always 1 for DSD)
+    uint32_t sample_count;   // Total sample count
+    uint16_t channel_type;   // Channel type
+    uint16_t reserved;       // Reserved
+};
+
+/**
+ * @brief DSDIFF DSD data chunk
+ */
+struct DSDIFFDataChunk {
+    char id[4];              // 'D', 'S', 'D', ' '
+    uint32_t chunk_size;     // Chunk size (excluding header)
+    uint32_t data_size;      // Actual DSD data size
 };
 
 /**
@@ -205,13 +237,158 @@ ErrorCode DSDDecoder::parseDSF(const std::string& filepath) {
 }
 
 ErrorCode DSDDecoder::parseDSDIFF(const std::string& filepath) {
-    (void)filepath;  // Suppress unused parameter warning
-    
-    // DSDIFF format parsing (simplified - would need full implementation)
-    LOG_INFO("DSDIFF format detected (parsing not fully implemented)");
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file) {
+        LOG_ERROR("Failed to open DSDIFF file: {}", filepath);
+        return ErrorCode::FileReadError;
+    }
 
-    // For now, treat as unsupported
-    return ErrorCode::UnsupportedFormat;
+    // Read DSDIFF header
+    DSDIFFHeader header;
+    file.read(reinterpret_cast<char*>(&header), sizeof(DSDIFFHeader));
+
+    if (std::memcmp(header.id, "FRM8", 4) != 0 || std::memcmp(header.type, "DSD ", 4) != 0) {
+        LOG_ERROR("Invalid DSDIFF file format");
+        return ErrorCode::UnsupportedFormat;
+    }
+
+    LOG_INFO("DSDIFF Format: DSDIFF");
+    LOG_INFO("  Chunk size: {} bytes", header.chunk_size);
+
+    // Read chunks until we find 'prop' and 'DSD ' chunks
+    bool found_prop = false;
+    bool found_data = false;
+
+    while (!found_data && file.good()) {
+        DSDIFFChunkHeader chunk_header;
+        file.read(reinterpret_cast<char*>(&chunk_header), sizeof(DSDIFFChunkHeader));
+
+        if (!file.good()) break;
+
+        // Convert chunk_size from big-endian
+        uint32_t chunk_size = ((chunk_header.chunk_size >> 24) & 0xFF) |
+                             ((chunk_header.chunk_size >> 8) & 0xFF00) |
+                             ((chunk_header.chunk_size << 8) & 0xFF0000) |
+                             ((chunk_header.chunk_size << 24) & 0xFF000000);
+
+        LOG_DEBUG("Found chunk: {:.4s}, size: {} bytes", chunk_header.id, chunk_size);
+
+        if (std::memcmp(chunk_header.id, "prop", 4) == 0) {
+            // Property chunk
+            if (chunk_size < sizeof(DSDIFFPropChunk) - 8) {  // -8 for id and size
+                LOG_ERROR("Invalid prop chunk size");
+                return ErrorCode::CorruptedFile;
+            }
+
+            DSDIFFPropChunk prop;
+            file.read(reinterpret_cast<char*>(&prop.id), 4);
+            file.read(reinterpret_cast<char*>(&prop.chunk_size), 4);
+            file.read(reinterpret_cast<char*>(&prop.version), 2);
+            file.read(reinterpret_cast<char*>(&prop.sample_rate), 4);
+            file.read(reinterpret_cast<char*>(&prop.channels), 2);
+            file.read(reinterpret_cast<char*>(&prop.bits_per_sample), 2);
+            file.read(reinterpret_cast<char*>(&prop.sample_count), 4);
+            file.read(reinterpret_cast<char*>(&prop.channel_type), 2);
+            file.read(reinterpret_cast<char*>(&prop.reserved), 2);
+
+            // Convert from big-endian
+            prop.version = ((prop.version >> 8) & 0xFF) | ((prop.version << 8) & 0xFF00);
+            prop.sample_rate = ((prop.sample_rate >> 24) & 0xFF) |
+                             ((prop.sample_rate >> 8) & 0xFF00) |
+                             ((prop.sample_rate << 8) & 0xFF0000) |
+                             ((prop.sample_rate << 24) & 0xFF000000);
+            prop.channels = ((prop.channels >> 8) & 0xFF) | ((prop.channels << 8) & 0xFF00);
+            prop.sample_count = ((prop.sample_count >> 24) & 0xFF) |
+                               ((prop.sample_count >> 8) & 0xFF00) |
+                               ((prop.sample_count << 8) & 0xFF0000) |
+                               ((prop.sample_count << 24) & 0xFF000000);
+
+            // Store metadata
+            impl_->channels = prop.channels;
+            impl_->dsd_rate = prop.sample_rate;
+            impl_->dsd_sample_count = prop.sample_count;
+
+            impl_->metadata.channels = prop.channels;
+            impl_->metadata.sample_rate = prop.sample_rate / 8; // Convert to Hz equivalent
+            impl_->metadata.bit_depth = 1; // DSD is 1-bit
+            impl_->metadata.format = "DSDIFF";
+            impl_->metadata.format_name = "DSDIFF";
+
+            // Calculate duration
+            double duration = static_cast<double>(prop.sample_count) / prop.sample_rate;
+            impl_->metadata.duration = duration;
+            impl_->metadata.sample_count = static_cast<uint64_t>(duration * impl_->metadata.sample_rate);
+
+            LOG_INFO("DSDIFF Properties:");
+            LOG_INFO("  Version: {}", prop.version);
+            LOG_INFO("  Channels: {}", prop.channels);
+            LOG_INFO("  DSD Rate: {} Hz ({}x oversampling)", prop.sample_rate, prop.sample_rate / 44100);
+            LOG_INFO("  Samples: {}", prop.sample_count);
+            LOG_INFO("  Duration: {:.2f} seconds", duration);
+
+            found_prop = true;
+
+            // Skip remaining prop chunk data
+            uint32_t remaining = chunk_size - (sizeof(DSDIFFPropChunk) - 8);
+            if (remaining > 0) {
+                file.seekg(remaining, std::ios::cur);
+            }
+
+        } else if (std::memcmp(chunk_header.id, "DSD ", 4) == 0) {
+            // DSD data chunk
+            if (!found_prop) {
+                LOG_ERROR("DSD data chunk found before prop chunk");
+                return ErrorCode::CorruptedFile;
+            }
+
+            // Read data_size field
+            uint32_t data_size;
+            file.read(reinterpret_cast<char*>(&data_size), 4);
+
+            // Convert from big-endian
+            data_size = ((data_size >> 24) & 0xFF) |
+                       ((data_size >> 8) & 0xFF00) |
+                       ((data_size << 8) & 0xFF0000) |
+                       ((data_size << 24) & 0xFF000000);
+
+            // Store DSD data location
+            impl_->dsd_data_offset = file.tellg();
+
+            // For DSDIFF, the data_size includes the actual DSD data
+            // The chunk_size includes the data_size field (4 bytes)
+            impl_->dsd_data_size = data_size;
+
+            LOG_INFO("DSD Data Chunk:");
+            LOG_INFO("  Data offset: {} bytes", impl_->dsd_data_offset);
+            LOG_INFO("  Data size: {} bytes", impl_->dsd_data_size);
+
+            found_data = true;
+
+            // Don't read the actual data here - it will be streamed later
+            break;
+
+        } else {
+            // Skip unknown chunks
+            LOG_DEBUG("Skipping chunk: {:.4s}, size: {} bytes", chunk_header.id, chunk_size);
+            file.seekg(chunk_size, std::ios::cur);
+        }
+    }
+
+    if (!found_prop || !found_data) {
+        LOG_ERROR("DSDIFF file missing required chunks");
+        return ErrorCode::CorruptedFile;
+    }
+
+    // Decode DSD to PCM
+    ErrorCode ret = decodeDSDToPCM();
+    if (ret != ErrorCode::Success) {
+        return ret;
+    }
+
+    impl_->loaded = true;
+    LOG_INFO("DSDIFF file loaded and decoded successfully");
+
+    return ErrorCode::Success;
 }
 
 ErrorCode DSDDecoder::decodeDSDToPCM() {
@@ -318,10 +495,6 @@ ErrorCode DSDDecoder::prepareStreaming(const std::string& filepath) {
 
     // Detect format
     impl_->format = detectFormat(filepath);
-    if (impl_->format == DSDFormat::DSDIFF) {
-        LOG_ERROR("DSDIFF streaming not supported yet");
-        return ErrorCode::UnsupportedFormat;
-    }
 
     // Open file for streaming
     impl_->dsd_file.open(filepath, std::ios::binary);
@@ -330,77 +503,227 @@ ErrorCode DSDDecoder::prepareStreaming(const std::string& filepath) {
         return ErrorCode::FileReadError;
     }
 
-    // Read DSF header
-    DSFHeader header;
-    impl_->dsd_file.read(reinterpret_cast<char*>(&header), sizeof(DSFHeader));
+    if (impl_->format == DSDFormat::DSF) {
+        // DSF format parsing
+        LOG_INFO("Detected DSF format");
 
-    if (std::memcmp(header.id, "DSD ", 4) != 0) {
-        LOG_ERROR("Invalid DSF file format");
+        // Read DSF header
+        DSFHeader header;
+        impl_->dsd_file.read(reinterpret_cast<char*>(&header), sizeof(DSFHeader));
+
+        if (std::memcmp(header.id, "DSD ", 4) != 0) {
+            LOG_ERROR("Invalid DSF file format");
+            return ErrorCode::UnsupportedFormat;
+        }
+
+        // Read format chunk
+        DSFFmtChunk fmt;
+        impl_->dsd_file.read(reinterpret_cast<char*>(&fmt), sizeof(DSFFmtChunk));
+
+        if (std::memcmp(fmt.id, "fmt ", 4) != 0) {
+            LOG_ERROR("Invalid DSF format chunk");
+            return ErrorCode::CorruptedFile;
+        }
+
+        // Validate DSD format
+        if (fmt.format_id != 0) {
+            LOG_ERROR("Unsupported DSD format ID: {}", fmt.format_id);
+            return ErrorCode::UnsupportedFormat;
+        }
+
+        // Store metadata
+        impl_->channels = fmt.channel_num;
+        impl_->dsd_rate = fmt.sampling_freq;
+        impl_->dsd_sample_count = fmt.sample_count;
+
+        impl_->metadata.file_path = filepath;
+        impl_->metadata.channels = fmt.channel_num;
+        impl_->metadata.sample_rate = fmt.sampling_freq / 8; // Convert to Hz equivalent
+        impl_->metadata.bit_depth = 1; // DSD is 1-bit
+        impl_->metadata.original_sample_rate = impl_->metadata.sample_rate;
+        impl_->metadata.original_bit_depth = 1;
+        impl_->metadata.format = "DSD";
+        impl_->metadata.format_name = "DSD";
+        impl_->metadata.is_lossless = true;
+
+        // Calculate duration
+        double duration = static_cast<double>(fmt.sample_count) / fmt.sampling_freq;
+        impl_->metadata.duration = duration;
+        impl_->metadata.sample_count = static_cast<uint64_t>(duration * impl_->metadata.sample_rate);
+
+        // Mark high-resolution audio
+        if (impl_->metadata.sample_rate >= 96000) {
+            impl_->metadata.is_high_res = true;
+        }
+
+        LOG_INFO("DSD Format: DSF (streaming mode)");
+        LOG_INFO("  Channels: {}", fmt.channel_num);
+        LOG_INFO("  DSD Rate: {} Hz ({}x oversampling)", fmt.sampling_freq, fmt.sampling_freq / 44100);
+        LOG_INFO("  Samples: {}", fmt.sample_count);
+        LOG_INFO("  Duration: {:.2f} seconds", duration);
+
+        // Read data chunk
+        DSFDataChunk data;
+        impl_->dsd_file.read(reinterpret_cast<char*>(&data), sizeof(DSFDataChunk));
+
+        if (std::memcmp(data.id, "data", 4) != 0) {
+            LOG_ERROR("Invalid DSF data chunk");
+            return ErrorCode::CorruptedFile;
+        }
+
+        // Store DSD data location for streaming
+        impl_->dsd_data_offset = impl_->dsd_file.tellg();
+        impl_->dsd_data_size = data.chunk_size - sizeof(data.sample_count);
+
+        LOG_INFO("DSD streaming prepared successfully");
+        LOG_INFO("  Data offset: {} bytes", impl_->dsd_data_offset);
+        LOG_INFO("  Data size: {} bytes", impl_->dsd_data_size);
+
+    } else if (impl_->format == DSDFormat::DSDIFF) {
+        // DSDIFF format parsing
+        LOG_INFO("Detected DSDIFF format");
+
+        // Read DSDIFF header
+        DSDIFFHeader header;
+        impl_->dsd_file.read(reinterpret_cast<char*>(&header), sizeof(DSDIFFHeader));
+
+        if (std::memcmp(header.id, "FRM8", 4) != 0 || std::memcmp(header.type, "DSD ", 4) != 0) {
+            LOG_ERROR("Invalid DSDIFF file format");
+            return ErrorCode::UnsupportedFormat;
+        }
+
+        LOG_INFO("DSDIFF Format: DSDIFF");
+        LOG_INFO("  Chunk size: {} bytes", header.chunk_size);
+
+        // Read chunks until we find 'prop' and 'DSD ' chunks
+        bool found_prop = false;
+        bool found_data = false;
+
+        while (!found_data && impl_->dsd_file.good()) {
+            DSDIFFChunkHeader chunk_header;
+            impl_->dsd_file.read(reinterpret_cast<char*>(&chunk_header), sizeof(DSDIFFChunkHeader));
+
+            if (!impl_->dsd_file.good()) break;
+
+            // Convert chunk_size from big-endian
+            uint32_t chunk_size = ((chunk_header.chunk_size >> 24) & 0xFF) |
+                                 ((chunk_header.chunk_size >> 8) & 0xFF00) |
+                                 ((chunk_header.chunk_size << 8) & 0xFF0000) |
+                                 ((chunk_header.chunk_size << 24) & 0xFF000000);
+
+            LOG_DEBUG("Found chunk: {:.4s}, size: {} bytes", chunk_header.id, chunk_size);
+
+            if (std::memcmp(chunk_header.id, "prop", 4) == 0) {
+                // Property chunk
+                DSDIFFPropChunk prop;
+                impl_->dsd_file.read(reinterpret_cast<char*>(&prop.id), 4);
+                impl_->dsd_file.read(reinterpret_cast<char*>(&prop.chunk_size), 4);
+                impl_->dsd_file.read(reinterpret_cast<char*>(&prop.version), 2);
+                impl_->dsd_file.read(reinterpret_cast<char*>(&prop.sample_rate), 4);
+                impl_->dsd_file.read(reinterpret_cast<char*>(&prop.channels), 2);
+                impl_->dsd_file.read(reinterpret_cast<char*>(&prop.bits_per_sample), 2);
+                impl_->dsd_file.read(reinterpret_cast<char*>(&prop.sample_count), 4);
+                impl_->dsd_file.read(reinterpret_cast<char*>(&prop.channel_type), 2);
+                impl_->dsd_file.read(reinterpret_cast<char*>(&prop.reserved), 2);
+
+                // Convert from big-endian
+                prop.version = ((prop.version >> 8) & 0xFF) | ((prop.version << 8) & 0xFF00);
+                prop.sample_rate = ((prop.sample_rate >> 24) & 0xFF) |
+                                 ((prop.sample_rate >> 8) & 0xFF00) |
+                                 ((prop.sample_rate << 8) & 0xFF0000) |
+                                 ((prop.sample_rate << 24) & 0xFF000000);
+                prop.channels = ((prop.channels >> 8) & 0xFF) | ((prop.channels << 8) & 0xFF00);
+                prop.sample_count = ((prop.sample_count >> 24) & 0xFF) |
+                                   ((prop.sample_count >> 8) & 0xFF00) |
+                                   ((prop.sample_count << 8) & 0xFF0000) |
+                                   ((prop.sample_count << 24) & 0xFF000000);
+
+                // Store metadata
+                impl_->channels = prop.channels;
+                impl_->dsd_rate = prop.sample_rate;
+                impl_->dsd_sample_count = prop.sample_count;
+
+                impl_->metadata.file_path = filepath;
+                impl_->metadata.channels = prop.channels;
+                impl_->metadata.sample_rate = prop.sample_rate / 8; // Convert to Hz equivalent
+                impl_->metadata.bit_depth = 1; // DSD is 1-bit
+                impl_->metadata.original_sample_rate = impl_->metadata.sample_rate;
+                impl_->metadata.original_bit_depth = 1;
+                impl_->metadata.format = "DSDIFF";
+                impl_->metadata.format_name = "DSDIFF";
+                impl_->metadata.is_lossless = true;
+
+                // Calculate duration
+                double duration = static_cast<double>(prop.sample_count) / prop.sample_rate;
+                impl_->metadata.duration = duration;
+                impl_->metadata.sample_count = static_cast<uint64_t>(duration * impl_->metadata.sample_rate);
+
+                // Mark high-resolution audio
+                if (impl_->metadata.sample_rate >= 96000) {
+                    impl_->metadata.is_high_res = true;
+                }
+
+                LOG_INFO("DSDIFF Properties:");
+                LOG_INFO("  Version: {}", prop.version);
+                LOG_INFO("  Channels: {}", prop.channels);
+                LOG_INFO("  DSD Rate: {} Hz ({}x oversampling)", prop.sample_rate, prop.sample_rate / 44100);
+                LOG_INFO("  Samples: {}", prop.sample_count);
+                LOG_INFO("  Duration: {:.2f} seconds", duration);
+
+                found_prop = true;
+
+                // Skip remaining prop chunk data
+                uint32_t remaining = chunk_size - (sizeof(DSDIFFPropChunk) - 8);
+                if (remaining > 0) {
+                    impl_->dsd_file.seekg(remaining, std::ios::cur);
+                }
+
+            } else if (std::memcmp(chunk_header.id, "DSD ", 4) == 0) {
+                // DSD data chunk
+                if (!found_prop) {
+                    LOG_ERROR("DSD data chunk found before prop chunk");
+                    return ErrorCode::CorruptedFile;
+                }
+
+                // Read data_size field
+                uint32_t data_size;
+                impl_->dsd_file.read(reinterpret_cast<char*>(&data_size), 4);
+
+                // Convert from big-endian
+                data_size = ((data_size >> 24) & 0xFF) |
+                           ((data_size >> 8) & 0xFF00) |
+                           ((data_size << 8) & 0xFF0000) |
+                           ((data_size << 24) & 0xFF000000);
+
+                // Store DSD data location for streaming
+                impl_->dsd_data_offset = impl_->dsd_file.tellg();
+                impl_->dsd_data_size = data_size;
+
+                LOG_INFO("DSD Data Chunk:");
+                LOG_INFO("  Data offset: {} bytes", impl_->dsd_data_offset);
+                LOG_INFO("  Data size: {} bytes", impl_->dsd_data_size);
+
+                found_data = true;
+                break;
+
+            } else {
+                // Skip unknown chunks
+                LOG_DEBUG("Skipping chunk: {:.4s}, size: {} bytes", chunk_header.id, chunk_size);
+                impl_->dsd_file.seekg(chunk_size, std::ios::cur);
+            }
+        }
+
+        if (!found_prop || !found_data) {
+            LOG_ERROR("DSDIFF file missing required chunks");
+            return ErrorCode::CorruptedFile;
+        }
+
+        LOG_INFO("DSDIFF streaming prepared successfully");
+
+    } else {
+        LOG_ERROR("Unknown DSD format");
         return ErrorCode::UnsupportedFormat;
     }
-
-    // Read format chunk
-    DSFFmtChunk fmt;
-    impl_->dsd_file.read(reinterpret_cast<char*>(&fmt), sizeof(DSFFmtChunk));
-
-    if (std::memcmp(fmt.id, "fmt ", 4) != 0) {
-        LOG_ERROR("Invalid DSF format chunk");
-        return ErrorCode::CorruptedFile;
-    }
-
-    // Validate DSD format
-    if (fmt.format_id != 0) {
-        LOG_ERROR("Unsupported DSD format ID: {}", fmt.format_id);
-        return ErrorCode::UnsupportedFormat;
-    }
-
-    // Store metadata
-    impl_->channels = fmt.channel_num;
-    impl_->dsd_rate = fmt.sampling_freq;
-    impl_->dsd_sample_count = fmt.sample_count;
-
-    impl_->metadata.file_path = filepath;
-    impl_->metadata.channels = fmt.channel_num;
-    impl_->metadata.sample_rate = fmt.sampling_freq / 8; // Convert to Hz equivalent
-    impl_->metadata.bit_depth = 1; // DSD is 1-bit
-    impl_->metadata.original_sample_rate = impl_->metadata.sample_rate;
-    impl_->metadata.original_bit_depth = 1;
-    impl_->metadata.format = "DSD";
-    impl_->metadata.format_name = "DSD";
-    impl_->metadata.is_lossless = true;
-
-    // Calculate duration
-    double duration = static_cast<double>(fmt.sample_count) / fmt.sampling_freq;
-    impl_->metadata.duration = duration;
-    impl_->metadata.sample_count = static_cast<uint64_t>(duration * impl_->metadata.sample_rate);
-
-    // Mark high-resolution audio
-    if (impl_->metadata.sample_rate >= 96000) {
-        impl_->metadata.is_high_res = true;
-    }
-
-    LOG_INFO("DSD Format: DSF (streaming mode)");
-    LOG_INFO("  Channels: {}", fmt.channel_num);
-    LOG_INFO("  DSD Rate: {} Hz ({}x oversampling)", fmt.sampling_freq, fmt.sampling_freq / 44100);
-    LOG_INFO("  Samples: {}", fmt.sample_count);
-    LOG_INFO("  Duration: {:.2f} seconds", duration);
-
-    // Read data chunk
-    DSFDataChunk data;
-    impl_->dsd_file.read(reinterpret_cast<char*>(&data), sizeof(DSFDataChunk));
-
-    if (std::memcmp(data.id, "data", 4) != 0) {
-        LOG_ERROR("Invalid DSF data chunk");
-        return ErrorCode::CorruptedFile;
-    }
-
-    // Store DSD data location for streaming
-    impl_->dsd_data_offset = impl_->dsd_file.tellg();
-    impl_->dsd_data_size = data.chunk_size - sizeof(data.sample_count);
-
-    LOG_INFO("DSD streaming prepared successfully");
-    LOG_INFO("  Data offset: {} bytes", impl_->dsd_data_offset);
-    LOG_INFO("  Data size: {} bytes", impl_->dsd_data_size);
 
     return ErrorCode::Success;
 }
