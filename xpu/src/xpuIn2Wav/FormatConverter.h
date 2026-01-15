@@ -57,7 +57,7 @@ private:
     int output_rate_;
     int channels_;
     double ratio_;
-    SRC_STATE* src_state_;
+    void* src_state_;  // Opaque pointer to SRC_STATE from libsamplerate
     bool initialized_;
 };
 
@@ -95,6 +95,26 @@ public:
                                          int bit_depth,
                                          int channels,
                                          const char* quality = "medium");
+
+    /**
+     * @brief Stream conversion: read from stdin, process in chunks, write to stdout
+     * This method processes audio data in chunks to reduce memory usage and latency
+     * Reads xpuLoad output format and outputs xpuPlay compatible format
+     * Output format: [JSON metadata][8-byte size header][PCM data]
+     *
+     * @param sample_rate Target sample rate (0 = keep original)
+     * @param bit_depth Target bit depth (16, 24, 32)
+     * @param channels Target channels (0 = keep original)
+     * @param quality Resampling quality ("best", "medium", "fast")
+     * @param chunk_size Number of frames to process per chunk (default: 4096)
+     * @param verbose Enable verbose logging
+     */
+    static ErrorCode convertStdinToStdoutStreaming(int sample_rate,
+                                                   int bit_depth,
+                                                   int channels,
+                                                   const char* quality = "medium",
+                                                   int chunk_size = 4096,
+                                                   bool verbose = false);
 
     /**
      * @brief Apply resampling

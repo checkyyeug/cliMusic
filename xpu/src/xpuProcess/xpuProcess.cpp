@@ -104,6 +104,11 @@ int main(int argc, char* argv[]) {
         _setmode(_fileno(stdout), _O_BINARY);
     #endif
 
+    // Disable buffering for stdin/stdout to enable streaming
+    std::ios_base::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+    std::cout.setf(std::ios::unitbuf);  // Force unbuffered output
+
     // Initialize logger
     utils::Logger::initialize("", false);  // Console only for xpuProcess
 
@@ -340,6 +345,12 @@ int main(int argc, char* argv[]) {
         std::cout.write(reinterpret_cast<const char*>(&output_size), sizeof(output_size));
         std::cout.write(reinterpret_cast<const char*>(processed_buffer.data()), output_size);
         std::cout.flush();
+        #ifdef PLATFORM_WINDOWS
+        _flushall();  // Force flush all streams on Windows
+        #else
+        fflush(nullptr);  // Force flush all streams on Unix
+        #endif
+
 
         total_samples += samples;
         total_frames_processed += frames;

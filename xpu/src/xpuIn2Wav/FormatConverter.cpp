@@ -64,7 +64,7 @@ StreamingResampler::StreamingResampler()
 
 StreamingResampler::~StreamingResampler() {
     if (src_state_) {
-        src_delete(src_state_);
+        src_delete(static_cast<SRC_STATE*>(src_state_));
         src_state_ = nullptr;
     }
 }
@@ -116,7 +116,7 @@ ErrorCode StreamingResampler::process(const float* input, int input_frames, std:
     src_data.output_frames = output_frames;
     src_data.src_ratio = ratio_;
 
-    int error = src_process(src_state_, &src_data);
+    int error = src_process(static_cast<SRC_STATE*>(src_state_), &src_data);
     if (error) {
         LOG_ERROR("libsamplerate error: {}", src_strerror(error));
         return ErrorCode::AudioDecodeError;
@@ -151,7 +151,7 @@ ErrorCode StreamingResampler::flush(std::vector<float>& output) {
     src_data.output_frames = max_output;
     src_data.src_ratio = ratio_;
 
-    int error = src_process(src_state_, &src_data);
+    int error = src_process(static_cast<SRC_STATE*>(src_state_), &src_data);
     if (error) {
         LOG_ERROR("libsamplerate flush error: {}", src_strerror(error));
         return ErrorCode::AudioDecodeError;
@@ -751,6 +751,11 @@ ErrorCode FormatConverter::convertStdinToStdout(int sample_rate,
         _setmode(_fileno(stdout), _O_BINARY);
     #endif
 
+    // Disable buffering for stdin/stdout to enable streaming
+    std::ios_base::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+    std::cout.setf(std::ios::unitbuf);  // Force unbuffered output
+
     // Read and parse JSON metadata from xpuLoad
     std::string json_str;
     char c;
@@ -961,6 +966,378 @@ ErrorCode FormatConverter::convertStdinToStdout(int sample_rate,
 
     LOG_INFO("Conversion complete: {} samples, {} bytes output to stdout",
              sample_count, output_data.size());
+
+    return ErrorCode::Success;
+}
+
+ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
+                                                         int bit_depth,
+                                                         int channels,
+                                                         const char* quality,
+                                                         int chunk_size,
+                                                         bool verbose) {
+    LOG_INFO("Converting stdin to stdout (streaming mode)");
+    LOG_INFO("  Target sample rate: {}", sample_rate > 0 ? sample_rate : 0);
+    LOG_INFO("  Target bit depth: {}", bit_depth);
+    LOG_INFO("  Target channels: {}", channels > 0 ? channels : 0);
+    LOG_INFO("  Quality: {}", quality);
+    LOG_INFO("  Chunk size: {} frames", chunk_size);
+
+    // Set stdin/stdout to binary mode
+    #ifdef PLATFORM_WINDOWS
+        _setmode(_fileno(stdin), _O_BINARY);
+        _setmode(_fileno(stdout), _O_BINARY);
+    #endif
+
+    // Disable buffering for stdin/stdout to enable streaming
+    std::ios_base::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+    std::cout.setf(std::ios::unitbuf);  // Force unbuffered output
+
+    // ===== Phase 1: Parse JSON metadata =====
+    std::string json_str;
+    char c;
+    bool json_complete = false;
+    int brace_count = 0;
+    bool in_json = false;
+    int max_json_size = 100000;
+    int json_bytes = 0;
+
+    while (std::cin.get(c) && json_bytes < max_json_size) {
+        json_str += c;
+        json_bytes++;
+
+        if (c == '{') {
+            in_json = true;
+            brace_count++;
+        } else if (c == '}') {
+            brace_count--;
+            if (in_json && brace_count == 0) {
+                int next_char = std::cin.peek();
+                if (next_char == '\n' || next_char == '\r') {
+                    std::cin.get(c);
+                    if (c == '\r' && std::cin.peek() == '\n') {
+                        std::cin.get(c);
+                    }
+                    json_complete = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!json_complete) {
+        LOG_ERROR("Failed to read complete JSON metadata from stdin");
+        return ErrorCode::InvalidOperation;
+    }
+
+    LOG_INFO("JSON metadata received: {} bytes", json_str.size());
+
+    // Parse input format from JSON
+    int input_sample_rate = 48000;
+    int input_channels = 2;
+
+    size_t sr_pos = json_str.find("\"sample_rate\":");
+    if (sr_pos != std::string::npos) {
+        size_t value_start = json_str.find(":", sr_pos) + 1;
+        size_t value_end = json_str.find(",", value_start);
+        if (value_end == std::string::npos) {
+            value_end = json_str.find("}", value_start);
+        }
+        std::string sr_str = json_str.substr(value_start, value_end - value_start);
+        size_t start = sr_str.find_first_not_of(" \t\n");
+        size_t end = sr_str.find_last_not_of(" \t\n");
+        if (start != std::string::npos && end != std::string::npos) {
+            sr_str = sr_str.substr(start, end - start + 1);
+            input_sample_rate = std::atoi(sr_str.c_str());
+        }
+    }
+
+    size_t ch_pos = json_str.find("\"channels\":");
+    if (ch_pos != std::string::npos) {
+        size_t value_start = json_str.find(":", ch_pos) + 1;
+        size_t value_end = json_str.find(",", value_start);
+        if (value_end == std::string::npos) {
+            value_end = json_str.find("}", value_start);
+        }
+        std::string ch_str = json_str.substr(value_start, value_end - value_start);
+        size_t start = ch_str.find_first_not_of(" \t\n");
+        size_t end = ch_str.find_last_not_of(" \t\n");
+        if (start != std::string::npos && end != std::string::npos) {
+            ch_str = ch_str.substr(start, end - start + 1);
+            input_channels = std::atoi(ch_str.c_str());
+        }
+    }
+
+    LOG_INFO("Input format: {} Hz, {} channels", input_sample_rate, input_channels);
+
+    // In streaming mode, we read multiple chunks: [chunk size][chunk data]...
+    // Each chunk has its own 8-byte size header
+    // We don't know the total size upfront, so we'll read until EOF
+
+    // Determine output parameters
+    int output_sample_rate = (sample_rate > 0) ? sample_rate : input_sample_rate;
+    int output_channels = (channels > 0) ? channels : input_channels;
+    int output_bit_depth = bit_depth;
+
+    // ===== Phase 1.5: Output metadata before streaming =====
+    // Note: In streaming mode, we don't know the total size upfront
+    // So we output metadata with estimated/placeholder values
+
+    // Generate JSON metadata
+    std::ostringstream json;
+    json << "{\n";
+    json << "  \"success\": true,\n";
+    json << "  \"metadata\": {\n";
+    json << "    \"file_path\": \"stdin\",\n";
+    json << "    \"format\": \"PCM\",\n";
+    json << "    \"sample_rate\": " << output_sample_rate << ",\n";
+    json << "    \"original_sample_rate\": " << input_sample_rate << ",\n";
+    json << "    \"channels\": " << output_channels << ",\n";
+    json << "    \"bit_depth\": " << output_bit_depth << ",\n";
+    json << "    \"original_bit_depth\": 32,\n";
+    json << "    \"is_lossless\": true\n";
+    json << "  }\n";
+    json << "}\n";
+
+    // Output to stdout: [JSON metadata] (no size header for streaming mode)
+    std::cout << json.str();
+    std::cout.flush();
+    #ifdef PLATFORM_WINDOWS
+    _flushall();  // Force flush all streams on Windows
+    #else
+    fflush(nullptr);  // Force flush all streams on Unix
+    #endif
+
+    LOG_INFO("Metadata sent to stdout");
+    LOG_INFO("Streaming mode: will output chunks as [size][data]...");
+
+    // ===== Phase 2: Initialize streaming resampler =====
+    StreamingResampler resampler;
+    bool needs_resampling = (output_sample_rate != input_sample_rate);
+
+    if (needs_resampling) {
+        ErrorCode ret = resampler.init(input_sample_rate, output_sample_rate, input_channels, quality);
+        if (ret != ErrorCode::Success) {
+            LOG_ERROR("Failed to initialize streaming resampler");
+            return ret;
+        }
+        LOG_INFO("Streaming resampler initialized: {} Hz -> {} Hz (ratio={}, quality={})",
+                 input_sample_rate, output_sample_rate, resampler.getRatio(), quality);
+    }
+
+    // Allocate buffers
+    std::vector<float> input_buffer;
+    std::vector<float> resampled_buffer;
+    std::vector<float> output_buffer;
+    std::vector<uint8_t> write_buffer;
+
+    // Track statistics
+    size_t total_output_frames = 0;
+    int chunk_count = 0;
+    bool first_chunk = true;
+
+    // ===== Phase 3: Process chunks in a loop =====
+    while (true) {
+        // Read chunk size header (8 bytes)
+        uint64_t chunk_input_size = 0;
+        char size_buffer[8];
+
+        if (!std::cin.read(size_buffer, 8)) {
+            // EOF or error
+            if (std::cin.eof()) {
+                LOG_INFO("End of input stream reached");
+                break;
+            } else {
+                LOG_ERROR("Failed to read chunk size header");
+                return ErrorCode::FileReadError;
+            }
+        }
+
+        std::memcpy(&chunk_input_size, size_buffer, 8);
+
+        if (chunk_input_size == 0) {
+            LOG_INFO("Received zero-size chunk, ending stream");
+            break;
+        }
+
+        size_t input_samples = chunk_input_size / sizeof(float);
+        size_t input_frames = input_samples / input_channels;
+
+        // Log first few chunks
+        if (first_chunk || chunk_count <= 2) {
+            LOG_INFO("Received input chunk {}: {} bytes ({} samples, {} frames)",
+                     chunk_count + 1, chunk_input_size, input_samples, input_frames);
+        }
+
+        // Resize input buffer
+        input_buffer.resize(input_samples);
+
+        // Read chunk data
+        if (!std::cin.read(reinterpret_cast<char*>(input_buffer.data()), chunk_input_size)) {
+            LOG_ERROR("Failed to read chunk {} data ({} bytes)", chunk_count + 1, chunk_input_size);
+            return ErrorCode::FileReadError;
+        }
+
+        chunk_count++;
+        first_chunk = false;
+
+        // Resample if needed
+        if (needs_resampling) {
+            ErrorCode ret = resampler.process(input_buffer.data(), input_frames, resampled_buffer);
+            if (ret != ErrorCode::Success) {
+                LOG_ERROR("Resampling failed at chunk {}", chunk_count);
+                return ret;
+            }
+
+            if (verbose || chunk_count <= 2) {
+                size_t output_frames = resampled_buffer.size() / input_channels;
+                LOG_INFO("Processing chunk {}: {} frames -> {} frames",
+                         chunk_count, input_frames, output_frames);
+            }
+
+            output_buffer = std::move(resampled_buffer);
+        } else {
+            // No resampling needed, just move the data
+            output_buffer = std::move(input_buffer);
+        }
+
+        // Convert channels if needed
+        if (output_channels != input_channels) {
+            std::vector<float> remixed;
+
+            if (output_channels < input_channels) {
+                // Downmix: take first N channels
+                size_t frames = output_buffer.size() / input_channels;
+                remixed.resize(frames * output_channels);
+
+                for (size_t i = 0; i < frames; ++i) {
+                    for (int ch = 0; ch < output_channels; ++ch) {
+                        remixed[i * output_channels + ch] = output_buffer[i * input_channels + ch];
+                    }
+                }
+            } else {
+                // Upmix: duplicate channels
+                size_t frames = output_buffer.size() / input_channels;
+                remixed.resize(frames * output_channels);
+
+                for (size_t i = 0; i < frames; ++i) {
+                    for (int ch = 0; ch < output_channels; ++ch) {
+                        int src_ch = (ch < input_channels) ? ch : 0;
+                        remixed[i * output_channels + ch] = output_buffer[i * input_channels + src_ch];
+                    }
+                }
+            }
+
+            output_buffer = std::move(remixed);
+        }
+
+        // Track output frames
+        total_output_frames += output_buffer.size() / output_channels;
+
+        // Convert bit depth if needed
+        if (output_bit_depth != 32) {
+            ErrorCode ret = convertBitDepth(output_buffer, 32, output_bit_depth, write_buffer);
+            if (ret != ErrorCode::Success) {
+                LOG_ERROR("Bit depth conversion failed at chunk {}", chunk_count);
+                return ret;
+            }
+        } else {
+            // Keep as 32-bit float
+            size_t byte_count = output_buffer.size() * sizeof(float);
+            write_buffer.resize(byte_count);
+            std::memcpy(write_buffer.data(), output_buffer.data(), byte_count);
+        }
+
+        // Write to stdout: [8-byte size header][PCM data] for each chunk
+        uint64_t chunk_size = write_buffer.size();
+        std::cout.write(reinterpret_cast<const char*>(&chunk_size), sizeof(chunk_size));
+        std::cout.write(reinterpret_cast<const char*>(write_buffer.data()), write_buffer.size());
+        std::cout.flush();
+        #ifdef PLATFORM_WINDOWS
+        _flushall();  // Force flush all streams on Windows
+        #else
+        fflush(nullptr);  // Force flush all streams on Unix
+        #endif
+
+
+        if (!std::cout) {
+            LOG_ERROR("Failed to write to stdout at chunk {}", chunk_count);
+            return ErrorCode::FileWriteError;
+        }
+    }
+
+    // ===== Phase 4: Flush remaining data from resampler =====
+    if (needs_resampling) {
+        ErrorCode ret = resampler.flush(output_buffer);
+        if (ret != ErrorCode::Success) {
+            LOG_ERROR("Resampler flush failed");
+            return ret;
+        }
+
+        if (!output_buffer.empty()) {
+            size_t flush_frames = output_buffer.size() / input_channels;
+            LOG_INFO("Flushing resampler: {} frames remaining", flush_frames);
+
+            // Convert channels if needed
+            if (output_channels != input_channels) {
+                std::vector<float> remixed;
+                size_t frames = output_buffer.size() / input_channels;
+                remixed.resize(frames * output_channels);
+
+                if (output_channels < input_channels) {
+                    // Downmix
+                    for (size_t i = 0; i < frames; ++i) {
+                        for (int ch = 0; ch < output_channels; ++ch) {
+                            remixed[i * output_channels + ch] = output_buffer[i * input_channels + ch];
+                        }
+                    }
+                } else {
+                    // Upmix
+                    for (size_t i = 0; i < frames; ++i) {
+                        for (int ch = 0; ch < output_channels; ++ch) {
+                            int src_ch = (ch < input_channels) ? ch : 0;
+                            remixed[i * output_channels + ch] = output_buffer[i * input_channels + src_ch];
+                        }
+                    }
+                }
+
+                output_buffer = std::move(remixed);
+            }
+
+            total_output_frames += output_buffer.size() / output_channels;
+
+            // Convert bit depth
+            if (output_bit_depth != 32) {
+                convertBitDepth(output_buffer, 32, output_bit_depth, write_buffer);
+            } else {
+                size_t byte_count = output_buffer.size() * sizeof(float);
+                write_buffer.resize(byte_count);
+                std::memcpy(write_buffer.data(), output_buffer.data(), byte_count);
+            }
+
+            // Write to stdout: [8-byte size header][PCM data]
+            uint64_t flush_size = write_buffer.size();
+            std::cout.write(reinterpret_cast<const char*>(&flush_size), sizeof(flush_size));
+            std::cout.write(reinterpret_cast<const char*>(write_buffer.data()), write_buffer.size());
+            std::cout.flush();
+            #ifdef PLATFORM_WINDOWS
+            _flushall();
+            #else
+            fflush(nullptr);
+            #endif
+
+        }
+    }
+
+    // ===== Phase 5: Log statistics =====
+    LOG_INFO("Streaming conversion complete:");
+    LOG_INFO("  Total output frames: {}", total_output_frames);
+    LOG_INFO("  Total input chunks processed: {}", chunk_count);
+
+    // Note: In streaming mode, we don't output metadata at the end
+    // because we've already sent the audio data chunk by chunk
+    // The initial JSON metadata was read but not re-emitted
 
     return ErrorCode::Success;
 }

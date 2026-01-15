@@ -99,7 +99,7 @@ xpuDaemon --mcp --stdio
 | 模块 | 功能 | 典型用法 |
 |------|------|----------|
 | `xpuLoad` | 解析音频文件 | `xpuLoad song.flac` |
-| `xpuIn2Wav` | 转换为 WAV | `xpuLoad a.flac \| xpuIn2Wav -` |
+| `xpuIn2Wav` | 转换为 WAV | `xpuLoad a.flac \| xpuIn2Wav` |
 | `xpuPlay` | 播放音频 | `xpuPlay` 或 `xpuPlay --device hdmi` |
 | `xpuQueue` | 队列管理 | `xpuQueue add *.flac` |
 | `xpuProcess` | DSP 处理 | `xpuProcess --eq rock --volume 0.8` |
@@ -159,13 +159,13 @@ xpuStream --target ws://192.168.1.100:8080/stream
 #### 音频处理
 ```bash
 # 基础 EQ
-xpuLoad song.flac | xpuIn2Wav - | xpuProcess --eq rock | xpuPlay
+xpuLoad song.flac | xpuIn2Wav | xpuProcess --eq rock | xpuPlay
 
 # 音量控制
-xpuLoad song.flac | xpuIn2Wav - | xpuProcess --volume 0.8 | xpuPlay
+xpuLoad song.flac | xpuIn2Wav | xpuProcess --volume 0.8 | xpuPlay
 
 # 格式转换并保存为文件
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -b 16 -o output.wav
+xpuLoad song.flac | xpuIn2Wavr 48000 -b 16 -o output.wav
 ```
 
 #### AI 集成
@@ -351,10 +351,10 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
    xpuLoad song.flac | xpuPlay -
 
    # 带格式转换的播放
-   xpuLoad song.flac | xpuIn2Wav - -r 48000 | xpuPlay -
+   xpuLoad song.flac | xpuIn2Wavr 48000 | xpuPlay -
 
    # 完整DSP处理链
-   xpuLoad song.flac | xpuIn2Wav - | xpuProcess --eq rock | xpuPlay -
+   xpuLoad song.flac | xpuIn2Wav | xpuProcess --eq rock | xpuPlay -
    ```
 
 2. **守护进程模式 (Daemon)**: 统一的状态管理和 API 服务
@@ -545,9 +545,9 @@ xpuLoad.exe \music\1_44100_24b.wav | xpuIn2Wav.exe - | xpuPlay.exe - -a
 # - 播放成功，音频完整
 
 # 测试不同质量选项
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -q best - | xpuPlay -     # 最高质量（慢）
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -q medium - | xpuPlay -   # 中等质量（推荐）
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -q fast - | xpuPlay -     # 最快速度
+xpuLoad song.flac | xpuIn2Wavr 48000 -q best | xpuPlay -     # 最高质量（慢）
+xpuLoad song.flac | xpuIn2Wavr 48000 -q medium | xpuPlay -   # 中等质量（推荐）
+xpuLoad song.flac | xpuIn2Wavr 48000 -q fast | xpuPlay -     # 最快速度
 ```
 
 <details>
@@ -2262,7 +2262,7 @@ xpuLoad --sample-rate 96000 <file>
 
 # 管道模式（自动检测，输出 PCM 数据）
 xpuLoad song.flac | xpuPlay - -a
-xpuLoad song.flac | xpuIn2Wav -
+xpuLoad song.flac | xpuIn2Wav
 
 # 输出 (stdout)
 {
@@ -2322,30 +2322,31 @@ xpuLoad song.flac | xpuIn2Wav -
 这是音频管道的"统一化"模块，确保后续所有模块只需处理一种格式。同时计算 FFT 数据并缓存，避免后续模块重复计算。
 
 支持两种输入模式：
-1. **直接文件模式**：从文件系统读取音频文件
-2. **管道模式**：从 stdin 读取 xpuLoad 的输出（默认输出到 stdout）
+1. **管道模式（默认）**：从 stdin 读取 xpuLoad 的输出（默认输出到 stdout）
+2. **文件模式**：使用 `-i/--input` 从文件系统读取音频文件
 
 ```bash
-# 基本用法（直接文件模式）
-xpuIn2Wav input.flac
-
-# 管道模式（从 xpuLoad 接收数据，输出到 stdout）
-xpuLoad song.flac | xpuIn2Wav - | xpuPlay -
+# 基本用法（管道模式 - 默认）
+xpuLoad song.flac | xpuIn2Wav | xpuPlay -
 
 # 指定输出参数（管道模式）
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -b 16 | xpuPlay -
+xpuLoad song.flac | xpuIn2Wavr 48000 -b 16 | xpuPlay -
 
 # 指定重采样质量
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -q best - | xpuPlay -     # 最高质量（慢）
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -q medium - | xpuPlay -   # 中等质量（推荐，默认）
-xpuLoad song.flac | xpuIn2Wav - -r 48000 -q fast - | xpuPlay -     # 最快速度（实时）
+xpuLoad song.flac | xpuIn2Wavr 48000 -q best | xpuPlay -     # 最高质量（慢）
+xpuLoad song.flac | xpuIn2Wavr 48000 -q medium | xpuPlay -   # 中等质量（推荐，默认）
+xpuLoad song.flac | xpuIn2Wavr 48000 -q fast | xpuPlay -     # 最快速度（实时）
 
 # 管道模式输出到文件
-xpuLoad song.flac | xpuIn2Wav - -o output.wav
+xpuLoad song.flac | xpuIn2Wavo output.wav
+
+# 文件模式（使用 -i/--input）
+xpuIn2Wav -i input.flac
+xpuIn2Wav --input input.flac
 
 # 文件模式指定输出参数
-xpuIn2Wav -r 96000 -b 32 -c 2 input.flac
-xpuIn2Wav --rate 48000 --bits 16 --channels 2 input.flac
+xpuIn2Wav -i input.flac -r 96000 -b 32 -c 2
+xpuIn2Wav -i input.flac --rate 48000 --bits 16 --channels 2
 
 # FFT 缓存选项
 xpuIn2Wav --cache-dir ~/.cache/xpu/fft  # 指定缓存目录
@@ -2537,6 +2538,332 @@ window = "hann"                 # 窗函数
 5. **FFT 预计算**：一次计算，多次复用，避免重复 FFT 变换
 6. **性能优化**：频域操作直接使用缓存，速度快 10-100 倍
 7. **可选设计**：可以禁用 FFT 缓存，保持向后兼容
+
+---
+
+**🔧 串流重采样功能（Streaming Resampling）**
+
+**功能概述：**
+
+串流重采样是 xpuIn2Wav 的一个可选优化功能，允许在处理大文件时一边从 stdin 读取音频数据，一边进行重采样转换，并立即输出到管道的下一站，而不是等待整个文件处理完成。这可以显著降低内存占用并提高响应速度。
+
+**当前实现状态：**
+
+代码库中已存在 `StreamingResampler` 类（定义于 `xpu/src/xpuIn2Wav/FormatConverter.h`），但尚未在 `FormatConverter::convertStdinToStdout` 等方法中实际使用。当前实现仍然采用批量处理模式（读取全部数据 → 一次性处理 → 输出全部数据）。
+
+**核心设计：**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              串流重采样架构设计                                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  传统批量模式（当前实现）：                                       │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐                     │
+│  │ stdin   │───→│  全部   │───→│ stdout  │                     │
+│  │ (所有)  │    │ 处理    │    │ (所有)  │                     │
+│  └─────────┘    └─────────┘    └─────────┘                     │
+│       │              │              │                           │
+│       │      [高内存占用]        [延迟高]                        │
+│                                                                 │
+│  串流模式（新设计）：                                           │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐                     │
+│  │ stdin   │───→│ 分块    │───→│ stdout  │                     │
+│  │ (chunk) │    │ 处理    │    │ (chunk) │                     │
+│  └─────────┘    └─────────┘    └─────────┘                     │
+│       │              │              │                           │
+│       │      [低内存占用]        [低延迟]                        │
+│       │              │              │                           │
+│       └──────────────┴──────────────┘                           │
+│                  持续流动                                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**命令行选项：**
+
+```bash
+# 启用串流重采样（新增选项）
+xpuLoad song.flac | xpuIn2Wav --streaming -r 48000 | xpuPlay -
+
+# 或简写
+xpuLoad song.flac | xpuIn2Wav -S -r 48000 | xpuPlay -
+
+# 指定分块大小（可选）
+xpuLoad song.flac | xpuIn2Wav --streaming --chunk-size 8192 -r 48000 | xpuPlay -
+
+# 禁用串流模式（默认行为，向后兼容）
+xpuLoad song.flac | xpuIn2Wavr 48000 | xpuPlay -
+```
+
+**新增参数：**
+
+| 选项 | 长选项 | 参数 | 默认值 | 说明 |
+|------|--------|------|--------|------|
+| `-S` | `--streaming` | 无 | false | 启用串流重采样模式 |
+| | `--chunk-size` | 整数 | 4096 | 每次处理的帧数（frames） |
+| | `--buffer-size` | 整数 | 65536 | 输出缓冲区大小（字节） |
+
+**实现架构：**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│           FormatConverter::convertStdinToStdoutStreaming        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. 解析阶段（一次性）：                                         │
+│     ┌─────────────┐                                            │
+│     │ JSON 元数据 │──→ 获取采样率、声道数、位深度                │
+│     └─────────────┘                                            │
+│     ┌─────────────┐                                            │
+│     │ 大小头      │──→ 获取数据总大小                           │
+│     └─────────────┘                                            │
+│                                                                 │
+│  2. 串流处理阶段（循环）：                                       │
+│     ┌─────────┐    ┌──────────────┐    ┌─────────┐            │
+│     │ stdin   │───→│ 读取 chunk   │───→│ PCM缓冲 │            │
+│     └─────────┘    └──────────────┘    └─────────┘            │
+│                           │                                    │
+│                           ▼                                    │
+│                   ┌──────────────┐                             │
+│                   │StreamingResa│                             │
+│                   │mpler.process │                             │
+│                   └──────────────┘                             │
+│                           │                                    │
+│                           ▼                                    │
+│                   ┌──────────────┐                             │
+│                   │ 重采样chunk   │                             │
+│                   └──────────────┘                             │
+│                           │                                    │
+│                           ▼                                    │
+│                   ┌──────────────┐                             │
+│                   │位深度转换     │                             │
+│                   └──────────────┘                             │
+│                           │                                    │
+│                           ▼                                    │
+│                   ┌──────────────┐     ┌─────────┐            │
+│                   │ 输出缓冲区   │────→│ stdout  │            │
+│                   └──────────────┘     └─────────┘            │
+│                                                                 │
+│  3. 结束阶段：                                                   │
+│     ┌──────────────┐    ┌──────────────┐                     │
+│     │ Resampler    │───→│ flush()      │                     │
+│     │ 剩余数据     │    │ 输出最后数据  │                     │
+│     └──────────────┘    └──────────────┘                     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**类设计：**
+
+```cpp
+// 已存在于 FormatConverter.h，需要实际使用
+class StreamingResampler {
+public:
+    StreamingResampler();
+    ~StreamingResampler();
+
+    // 初始化重采样器
+    ErrorCode init(int input_rate, int output_rate, int channels, const char* quality);
+
+    // 处理一个数据块（核心方法）
+    ErrorCode process(const float* input, int input_frames, std::vector<float>& output);
+
+    // 刷新剩余数据
+    ErrorCode flush(std::vector<float>& output);
+
+    // 检查是否需要重采样
+    bool isActive() const { return input_rate_ != output_rate_; }
+
+    double getRatio() const { return ratio_; }
+
+private:
+    int input_rate_;
+    int output_rate_;
+    int channels_;
+    double ratio_;
+    SRC_STATE* src_state_;  // libsamplerate 状态
+    bool initialized_;
+};
+```
+
+**新增方法签名：**
+
+```cpp
+// FormatConverter 类新增方法
+class FormatConverter {
+public:
+    // ... 现有方法 ...
+
+    /**
+     * @brief 串流模式：从 stdin 读取并转换到 stdout
+     * @param sample_rate 目标采样率
+     * @param bit_depth 目标位深度
+     * @param channels 目标声道数
+     * @param quality 重采样质量
+     * @param chunk_size 每次处理的帧数（默认 4096）
+     * @param buffer_size 输出缓冲区大小（默认 65536）
+     */
+    static ErrorCode convertStdinToStdoutStreaming(
+        int sample_rate,
+        int bit_depth,
+        int channels,
+        const char* quality,
+        int chunk_size = 4096,
+        size_t buffer_size = 65536
+    );
+};
+```
+
+**数据流程图：**
+
+```
+xpuLoad                    xpuIn2Wav (串流模式)              xpuPlay
+    │                            │                             │
+    │  [JSON元数据]               │  解析元数据                  │
+    │──────────────────────────→│                             │
+    │                            │  初始化 StreamingResampler   │
+    │  [8字节大小头]              │                             │
+    │──────────────────────────→│  获取数据大小                │
+    │                            │                             │
+    │  [PCM数据 chunk 1]         │  读取 chunk 1               │
+    │──────────────────────────→│  StreamingResampler::process│
+    │                            │  位深度转换                  │
+    │                            │──────────────────────────→│  播放 chunk 1
+    │                            │                             │
+    │  [PCM数据 chunk 2]         │  读取 chunk 2               │
+    │──────────────────────────→│  StreamingResampler::process│
+    │                            │  位深度转换                  │
+    │                            │──────────────────────────→│  播放 chunk 2
+    │                            │                             │
+    │  ...                        │  ...                        │  ...
+    │                            │                             │
+    │                            │  StreamingResampler::flush  │
+    │                            │──────────────────────────→│  播放最后数据
+    │                            │                             │
+    ▼                            ▼                             ▼
+```
+
+**性能对比：**
+
+| 指标 | 批量模式（当前） | 串流模式 | 改进 |
+|------|-----------------|----------|------|
+| **内存占用** | 整个文件 | 固定缓冲区（~256KB） | 降低 95%+ |
+| **首字节延迟** | 处理完整个文件 | 第一个 chunk 后 | 降低 99%+ |
+| **适用场景** | 小文件（<100MB） | 大文件、实时播放 | - |
+| **5分钟歌曲** | ~50MB RAM | ~256KB RAM | 降低 99.5% |
+| **响应时间** | ~5-10秒 | <100ms | 降低 98%+ |
+
+**分块大小建议：**
+
+| 分块大小 | 帧数 | 延迟（@48kHz） | 内存占用 | 适用场景 |
+|---------|------|---------------|---------|----------|
+| 2048 | 2K | ~43ms | ~64KB | 实时播放 |
+| 4096 | 4K | ~85ms | ~128KB | 默认推荐 |
+| 8192 | 8K | ~171ms | ~256KB | 高质量 |
+| 16384 | 16K | ~341ms | ~512KB | 批处理 |
+
+**配置文件支持：**
+
+```toml
+# xpuSetting.conf
+[streaming]
+enabled = false              # 默认禁用，保持向后兼容
+chunk_size = 4096            # 每次处理的帧数
+buffer_size = 65536          # 输出缓冲区大小（字节）
+```
+
+**错误处理：**
+
+```cpp
+// 错误场景处理
+1. stdin 读取失败：返回 ErrorCode::FileReadError
+2. 重采样初始化失败：返回 ErrorCode::AudioDecodeError
+3. 内存分配失败：返回 ErrorCode::OutOfMemory
+4. stdout 写入失败：返回 ErrorCode::FileWriteError
+```
+
+**日志输出示例：**
+
+```
+[INFO] xpuIn2Wav starting (streaming mode)
+[INFO] Streaming resampler initialized: 44100 Hz -> 48000 Hz (ratio=1.088435, quality=medium)
+[INFO] Chunk size: 4096 frames, Buffer size: 65536 bytes
+[INFO] Processing chunk 1: 4096 frames -> 4458 frames
+[INFO] Processing chunk 2: 4096 frames -> 4458 frames
+...
+[INFO] Flushing resampler: 256 frames remaining
+[INFO] Conversion complete: 12588112 input frames -> 13701190 output frames
+[INFO] Streaming conversion completed successfully
+```
+
+**向后兼容性：**
+
+- 默认行为保持不变（批量模式）
+- 新增 `--streaming` / `-S` 选项启用串流模式
+- 现有命令和脚本无需修改
+- StreamingResampler 类已存在，只需实际使用
+
+**测试计划：**
+
+```bash
+# 单元测试
+1. 测试 StreamingResampler::init()
+2. 测试 StreamingResampler::process() 各种分块大小
+3. 测试 StreamingResampler::flush()
+4. 测试采样率转换（44.1k->48k, 48k->96k, etc.）
+5. 测试位深度转换
+6. 测试声道转换
+
+# 集成测试
+1. 测试完整管道：xpuLoad | xpuIn2Wav -S | xpuPlay
+2. 测试大文件（>1GB）内存占用
+3. 测试首字节延迟
+4. 测试输出质量与批量模式对比
+5. 测试错误处理（中断、数据损坏等）
+
+# 性能测试
+1. 内存占用对比（批量 vs 串流）
+2. 延迟对比（首字节、总时间）
+3. CPU 占用对比
+4. 不同分块大小的性能
+```
+
+**实现优先级：**
+
+Phase 1（核心功能）：
+1. ✅ StreamingResampler 类已实现
+2. ⬜ FormatConverter::convertStdinToStdoutStreaming() 实现
+3. ⬜ 命令行参数解析（--streaming, -S）
+4. ⬜ 基本测试
+
+Phase 2（优化）：
+1. ⬜ 可配置分块大小
+2. ⬜ 缓冲区大小优化
+3. ⬜ 性能基准测试
+4. ⬜ 文档完善
+
+Phase 3（高级特性）：
+1. ⬜ 自适应分块大小
+2. ⬜ 进度报告
+3. ⬜ 配置文件支持
+
+**使用示例：**
+
+```bash
+# 场景1：实时播放大文件（推荐串流模式）
+xpuLoad large_album.flac | xpuIn2Wav -S -r 48000 | xpuPlay -
+
+# 场景2：小文件批量转换（默认批量模式即可）
+xpuLoad song.flac | xpuIn2Wav -o output.wav
+
+# 场景3：网络流传输（低延迟优先）
+xpuLoad song.flac | xpuIn2Wav -S --chunk-size 2048 -r 48000 | xpuStream --target remote:8080
+
+# 场景4：离线高质量转换（批量模式）
+xpuIn2Wav -i input.flac -r 96000 -b 32 -q best
+```
+
+---
 
 #### 3.2.3 xpuFingerprint (音频指纹)
 
@@ -3971,7 +4298,7 @@ xpuPlay -
 
 # 管道播放
 xpuLoad song.flac | xpuPlay -
-xpuLoad song.flac | xpuIn2Wav - | xpuPlay -
+xpuLoad song.flac | xpuIn2Wav | xpuPlay -
 
 # 指定设备
 xpuPlay -d "扬声器 (Realtek(R) Audio)" -
@@ -5600,7 +5927,7 @@ xpuLoad song.flac | xpuIn2Wav | \
     xpuPlay
 
 # 高解析度播放 (192kHz/32-bit)
-xpuLoad song.flac | xpuIn2Wav --rate 192000 --depth 32 | \
+xpuLoad song.flac | xpuIn2Wav-rate 192000 --depth 32 | \
     xpuProcess --volume 0.9 | \
     xpuOutWave | \
     xpuPlay
@@ -5617,7 +5944,7 @@ for file in *.flac; do
 done
 
 # 格式转换：FLAC → FLAC（重新编码到更高采样率）
-xpuLoad song.flac | xpuIn2Wav --rate 192000 | \
+xpuLoad song.flac | xpuIn2Wav-rate 192000 | \
     xpuProcess --compress 2:1 | \
     xpuOutWave --format flac --compression 0 > output.flac
 
@@ -5808,21 +6135,21 @@ xpuVisualize --cache-clear
 xpuLoad song.flac | xpuIn2Wav | xpuProcess | xpuOutWave --auto | xpuPlay
 
 # 顶级音质：32-bit 384kHz + 无压缩
-xpuLoad song.flac | xpuIn2Wav --rate 384000 --depth 32 | \
+xpuLoad song.flac | xpuIn2Wav-rate 384000 --depth 32 | \
     xpuProcess --volume 0.8 --eq flat | \
     xpuOutWave --format wav --dither none | xpuPlay
 
 # 高端音质：24-bit 192kHz + FLAC 压缩
-xpuLoad song.flac | xpuIn2Wav --rate 192000 --depth 24 | \
+xpuLoad song.flac | xpuIn2Wav-rate 192000 --depth 24 | \
     xpuProcess --volume 0.8 | \
     xpuOutWave --format flac --compression 0 | xpuPlay
 
 # 标准音质：24-bit 96kHz
-xpuLoad song.flac | xpuIn2Wav --rate 96000 --depth 24 | \
+xpuLoad song.flac | xpuIn2Wav-rate 96000 --depth 24 | \
     xpuProcess | xpuOutWave | xpuPlay
 
 # 低延迟：降低缓冲
-xpuLoad song.flac | xpuIn2Wav --rate 44100 --depth 16 | \
+xpuLoad song.flac | xpuIn2Wav-rate 44100 --depth 16 | \
     xpuProcess | xpuOutWave | xpuPlay --buffer-size 512
 ```
 
@@ -6300,7 +6627,7 @@ xpuProcess --benchmark --effect "reverb hall --decay 2.5"
 # }
 
 # GPU加速FFT计算（巨大提升）
-xpuLoad song.flac | xpuIn2Wav --fft-cache | \
+xpuLoad song.flac | xpuIn2Wav-fft-cache | \
     xpuProcess --backend cuda --eq rock | \
     xpuPlay
 
@@ -7619,7 +7946,7 @@ done
 # 添加依赖任务（手动编排）
 # 任务1：生成FFT缓存
 xpuQueue add --name "生成FFT缓存" \
-    --command "xpuLoad song.flac | xpuIn2Wav --fft-cache > /dev/null"
+    --command "xpuLoad song.flac | xpuIn2Wav-fft-cache > /dev/null"
 
 # 等待任务1完成
 TASK_ID=$(xpuQueue add --name "生成FFT缓存" ...)
@@ -7895,7 +8222,7 @@ exit 64   # AudioDecodeError
 exit 80   # CacheNotFound
 
 # 模块应该输出错误到 stderr，退出码反映错误类别
-xpuIn2Wav song.flac 2>error.json
+xpuIn2Wav -i song.flac 2>error.json
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 64 ]; then
