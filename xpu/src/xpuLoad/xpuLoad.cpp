@@ -213,29 +213,40 @@ int main(int argc, char* argv[]) {
     protocol::AudioMetadata metadata;
 
     if (is_dsd) {
-        // DSD files: Use batch mode (DSD decoder doesn't support streaming yet)
-        LOG_INFO("Using DSD decoder (batch mode)");
+        // DSD files: Use streaming mode (Phase 3 optimization - DSD support)
+        LOG_INFO("Using DSD decoder (streaming mode - Phase 3)");
         load::DSDDecoder dsd_decoder;
         dsd_decoder.setTargetSampleRate(target_sample_rate);
-        ret = dsd_decoder.load(input_file);
 
+        // Step 1: Prepare streaming (opens file and extracts metadata)
+        ret = dsd_decoder.prepareStreaming(input_file);
         if (ret != ErrorCode::Success) {
             std::string error_msg = "Error code: " + std::to_string(static_cast<int>(ret));
             std::cerr << error_msg << "\n";
-            LOG_ERROR("Failed to load DSD file: {}", static_cast<int>(ret));
+            LOG_ERROR("Failed to prepare DSD streaming: {}", static_cast<int>(ret));
             return static_cast<int>(getHTTPStatusCode(ret));
         }
 
+        // Step 2: Get metadata
         metadata = dsd_decoder.getMetadata();
+        LOG_INFO("DSD metadata extracted successfully");
 
-        // Output metadata as JSON
+        // Mark high-resolution audio
+        if (metadata.sample_rate >= 96000) {
+            metadata.is_high_res = true;
+            LOG_INFO("High-resolution audio detected: {} Hz", metadata.sample_rate);
+        }
+
+        // Step 3: Output metadata as JSON
         if (!data_only) {
             std::cout << ::metadataToJSON(metadata);
             std::cout.flush();
             LOG_INFO("Metadata output to stdout");
         }
 
-        // Output PCM data in batch mode for DSD
+        // Step 4: Stream PCM data ONLY if:
+        // 1. --data option is specified, OR
+        // 2. stdout is NOT a terminal (piped to another program)
         #ifdef PLATFORM_WINDOWS
         DWORD mode;
         bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
@@ -244,39 +255,42 @@ int main(int argc, char* argv[]) {
         #endif
 
         if (!metadata_only && (data_only || is_piped)) {
-            std::vector<uint8_t> pcm_data_copy = dsd_decoder.getPCMData();
-            if (!pcm_data_copy.empty()) {
-                constexpr size_t CHUNK_SIZE = 64 * 1024;
-                size_t total_size = pcm_data_copy.size();
-                size_t offset = 0;
-                int chunk_count = 0;
+            // Stream PCM data using callback
+            int chunk_count = 0;
 
-                LOG_INFO("Streaming PCM data in chunks: {} bytes total", total_size);
+            auto streaming_callback = [&](const float* chunk_data, size_t chunk_samples) -> bool {
+                chunk_count++;
+                size_t chunk_bytes = chunk_samples * sizeof(float);
 
-                while (offset < total_size) {
-                    size_t chunk_size = (CHUNK_SIZE < total_size - offset) ? CHUNK_SIZE : total_size - offset;
+                // Output chunk: [8-byte size header][PCM data]
+                uint64_t size_header = chunk_bytes;
+                std::cout.write(reinterpret_cast<const char*>(&size_header), sizeof(size_header));
+                std::cout.write(reinterpret_cast<const char*>(chunk_data), chunk_bytes);
+                std::cout.flush();
 
-                    uint64_t chunk_bytes = chunk_size;
-                    std::cout.write(reinterpret_cast<const char*>(&chunk_bytes), sizeof(chunk_bytes));
-                    std::cout.write(reinterpret_cast<const char*>(pcm_data_copy.data() + offset), chunk_size);
-                    std::cout.flush();
+                #ifdef PLATFORM_WINDOWS
+                _flushall();
+                #else
+                fflush(nullptr);
+                #endif
 
-                    #ifdef PLATFORM_WINDOWS
-                    _flushall();
-                    #else
-                    fflush(nullptr);
-                    #endif
-
-                    chunk_count++;
-                    offset += chunk_size;
-
-                    if (chunk_count <= 5) {
-                        LOG_INFO("Output chunk {}: {} bytes", chunk_count, chunk_size);
-                    }
+                // Log first few chunks
+                if (chunk_count <= 5) {
+                    LOG_INFO("Output chunk {}: {} samples ({} bytes)", chunk_count, chunk_samples, chunk_bytes);
                 }
 
-                LOG_INFO("PCM data streaming complete: {} chunks, {} bytes", chunk_count, total_size);
+                return true;  // Continue streaming
+            };
+
+            LOG_INFO("Starting DSD PCM data streaming...");
+            ret = dsd_decoder.streamPCM(streaming_callback, 64 * 1024);  // 64KB chunks
+
+            if (ret != ErrorCode::Success) {
+                LOG_ERROR("DSD streaming failed: {}", static_cast<int>(ret));
+                return static_cast<int>(getHTTPStatusCode(ret));
             }
+
+            LOG_INFO("DSD PCM data streaming complete: {} chunks", chunk_count);
         } else if (!metadata_only) {
             LOG_INFO("PCM data skipped (not in pipe mode, use -d to force output)");
         }
