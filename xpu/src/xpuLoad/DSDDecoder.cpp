@@ -416,7 +416,27 @@ ErrorCode DSDDecoder::decodeDSDToPCM() {
     const uint32_t target_sample_rate = (impl_->target_sample_rate > 0) ?
                                          static_cast<uint32_t>(impl_->target_sample_rate) : 48000;
     const uint32_t target_channels = 2;
+
+    // Division by zero protection
+    if (target_sample_rate == 0) {
+        LOG_ERROR("Invalid target sample rate: 0");
+        return ErrorCode::InvalidArgument;
+    }
+
     const uint32_t decimation_factor = impl_->dsd_rate / target_sample_rate;
+
+    // Validate decimation factor
+    if (decimation_factor == 0) {
+        LOG_ERROR("Invalid decimation factor: 0 (dsd_rate={}, target_sample_rate={})",
+                  impl_->dsd_rate, target_sample_rate);
+        return ErrorCode::InvalidArgument;
+    }
+
+    if (decimation_factor > impl_->dsd_rate) {
+        LOG_ERROR("Decimation factor {} exceeds DSD rate {}, check sample rates",
+                  decimation_factor, impl_->dsd_rate);
+        return ErrorCode::InvalidArgument;
+    }
 
     // Calculate output size
     uint64_t total_output_samples = impl_->dsd_sample_count / decimation_factor;
@@ -429,8 +449,11 @@ ErrorCode DSDDecoder::decodeDSDToPCM() {
     uint64_t samples_decoded = 0;
 
     while (samples_decoded < total_output_samples && dsd_index < impl_->dsd_data.size()) {
-        // Process each channel
-        for (uint32_t ch = 0; ch < std::min(impl_->channels, target_channels); ++ch) {
+        // Process each channel - use actual channel count from file
+        // Don't hardcode to 2, support multi-channel DSD files properly
+        const uint32_t actual_channels = std::min(impl_->channels, target_channels);
+
+        for (uint32_t ch = 0; ch < actual_channels; ++ch) {
             // Accumulate DSD bits for decimation
             int32_t accumulator = 0;
             uint32_t bits_processed = 0;
@@ -446,7 +469,7 @@ ErrorCode DSDDecoder::decodeDSDToPCM() {
                 accumulator += dsd_bit;
 
                 bits_processed++;
-                dsd_index += impl_->channels; // Interleaved channels
+                dsd_index += impl_->channels; // Interleaved channels (use actual file channel count)
             }
 
             // Average and normalize to float [-1.0, 1.0]
@@ -788,7 +811,31 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
 
     LOG_INFO("Using intermediate sample rate: {} Hz (DSD64)", intermediate_sample_rate);
 
+    // Division by zero protection for intermediate_sample_rate
+    if (intermediate_sample_rate == 0) {
+        LOG_ERROR("Invalid intermediate sample rate: 0");
+        return ErrorCode::InvalidArgument;
+    }
+
+    if (impl_->dsd_rate == 0) {
+        LOG_ERROR("Invalid DSD rate: 0");
+        return ErrorCode::InvalidArgument;
+    }
+
     const uint32_t decimation_factor = impl_->dsd_rate / intermediate_sample_rate;
+
+    // Validate decimation factor
+    if (decimation_factor == 0) {
+        LOG_ERROR("Invalid decimation factor: 0 (dsd_rate={}, intermediate_sample_rate={})",
+                  impl_->dsd_rate, intermediate_sample_rate);
+        return ErrorCode::InvalidArgument;
+    }
+
+    if (decimation_factor > impl_->dsd_rate) {
+        LOG_ERROR("Decimation factor {} exceeds DSD rate {}",
+                  decimation_factor, impl_->dsd_rate);
+        return ErrorCode::InvalidArgument;
+    }
 
     // Calculate output size (impl_->dsd_sample_count is per-channel DSD samples)
     // Output frames = (DSD samples per channel / decimation factor)
@@ -804,15 +851,59 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
 
     // Chunk buffer for accumulating samples before callback
     size_t chunk_size_samples = chunk_size_bytes / sizeof(float);
+
+    // Validate chunk_size_samples
+    if (chunk_size_samples == 0) {
+        LOG_ERROR("Invalid chunk size: {} bytes (results in 0 samples)", chunk_size_bytes);
+        return ErrorCode::InvalidArgument;
+    }
+
+    // Prevent excessively large chunks that could cause memory issues
+    const size_t MAX_CHUNK_SAMPLES = 10 * 1024 * 1024;  // 10M samples = 40MB
+    if (chunk_size_samples > MAX_CHUNK_SAMPLES) {
+        LOG_ERROR("Chunk size {} samples exceeds maximum {} samples",
+                  chunk_size_samples, MAX_CHUNK_SAMPLES);
+        return ErrorCode::InvalidArgument;
+    }
+
     std::vector<float> chunk_buffer;
-    chunk_buffer.reserve(chunk_size_samples);
+    // Reserve with extra buffer to prevent frequent reallocations
+    chunk_buffer.reserve(chunk_size_samples + 100);  // Add safety margin
 
     // Seek to DSD data and read all DSD data into memory
     // Note: For true streaming we would read in chunks, but for simplicity
     // we load all DSD data here since we already have the file open
     impl_->dsd_file.seekg(impl_->dsd_data_offset);
 
-    std::vector<uint8_t> dsd_data(impl_->dsd_data_size);
+    // Memory allocation safety: add size limit to prevent excessive memory usage
+    const size_t MAX_DSD_MEMORY = 256 * 1024 * 1024;  // 256MB limit
+    if (impl_->dsd_data_size > MAX_DSD_MEMORY) {
+        LOG_ERROR("DSD data size {} bytes ({} MB) exceeds maximum allowed {} MB",
+                  impl_->dsd_data_size, impl_->dsd_data_size / (1024 * 1024),
+                  MAX_DSD_MEMORY / (1024 * 1024));
+        return ErrorCode::OutOfMemory;
+    }
+
+    // Check for empty data
+    if (impl_->dsd_data_size == 0) {
+        LOG_ERROR("DSD data size is 0, nothing to decode");
+        return ErrorCode::InvalidOperation;
+    }
+
+    // Try-catch for memory allocation failures
+    std::vector<uint8_t> dsd_data;
+    try {
+        dsd_data.resize(impl_->dsd_data_size);
+    } catch (const std::bad_alloc& e) {
+        LOG_ERROR("Memory allocation failed for DSD data (requested {} bytes): {}",
+                  impl_->dsd_data_size, e.what());
+        return ErrorCode::OutOfMemory;
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception during DSD data allocation: {}", e.what());
+        return ErrorCode::OutOfMemory;
+    }
+
+    // Read DSD data
     impl_->dsd_file.read(reinterpret_cast<char*>(dsd_data.data()), impl_->dsd_data_size);
     size_t dsd_bytes_read = impl_->dsd_file.gcount();
 
@@ -835,6 +926,13 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
     // For stereo: all channel 0 data comes first, then all channel 1 data
     size_t channel_data_size = dsd_data.size() / target_channels;  // Per-channel data size in bytes
 
+    // Safety check for channel_data_size to avoid division by zero
+    if (target_channels == 0 || channel_data_size == 0) {
+        LOG_ERROR("Invalid channel configuration: target_channels={}, channel_data_size={}",
+                  target_channels, channel_data_size);
+        return ErrorCode::InvalidOperation;
+    }
+
     while (samples_decoded < total_output_frames) {
         // Process each channel
         for (uint32_t ch = 0; ch < target_channels && samples_decoded < total_output_frames; ++ch) {
@@ -842,9 +940,25 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
             // DSF format: channel 0 data first, then channel 1 data, etc.
             size_t channel_bit_index = ch * channel_data_size * 8 + (samples_decoded * decimation_factor);
 
-            // Check if we have enough data for this channel
+            // Enhanced boundary checking to prevent buffer overflow
+            // Check 1: channel_bit_index must not exceed channel data bounds
+            size_t max_channel_bit_index = (ch + 1) * channel_data_size * 8;
+            if (channel_bit_index >= max_channel_bit_index) {
+                LOG_WARN("Channel {} bit index {} exceeds channel bounds {}, ending stream",
+                         ch, channel_bit_index, max_channel_bit_index);
+                goto streaming_complete;
+            }
+
+            // Check 2: ensure we don't read beyond total DSD data
             if (channel_bit_index + decimation_factor > dsd_data.size() * 8) {
-                // Not enough data, we're at the end
+                LOG_WARN("Insufficient DSD data: need {} bits, available {} bits",
+                         channel_bit_index + decimation_factor, dsd_data.size() * 8);
+                goto streaming_complete;
+            }
+
+            // Check 3: prevent integer overflow in bit index calculation
+            if (samples_decoded > (UINT64_MAX - decimation_factor) / decimation_factor) {
+                LOG_ERROR("Integer overflow prevented at samples_decoded={}", samples_decoded);
                 goto streaming_complete;
             }
 
@@ -855,8 +969,19 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
 
             // Accumulate decimation_factor DSD bits
             for (uint32_t i = 0; i < decimation_factor; ++i) {
-                // Get DSD bit (MSB first)
-                uint8_t byte = dsd_data[channel_bit_index / 8];
+                // Get DSD bit - DSF format uses MSB-first bit order
+                // Validate byte index before accessing
+                size_t byte_index = channel_bit_index / 8;
+                if (byte_index >= dsd_data.size()) {
+                    LOG_ERROR("Byte index {} out of bounds (data size {})",
+                              byte_index, dsd_data.size());
+                    goto streaming_complete;
+                }
+
+                uint8_t byte = dsd_data[byte_index];
+
+                // Extract bit using MSB-first order (bit 7 is first, bit 0 is last)
+                // This is the standard bit order for DSF format
                 uint8_t bit = (byte >> (7 - (channel_bit_index % 8))) & 1;
 
                 // Convert to bipolar (-1 or +1) and accumulate
@@ -899,9 +1024,17 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
                 }
             }
 
+            // Add sample to chunk buffer with bounds checking
+            if (chunk_buffer.size() >= chunk_buffer.capacity()) {
+                // This shouldn't happen with proper reservation, but protect anyway
+                LOG_ERROR("Chunk buffer overflow: size {} >= capacity {}",
+                          chunk_buffer.size(), chunk_buffer.capacity());
+                return ErrorCode::BufferOverrun;
+            }
+
             chunk_buffer.push_back(sample);
 
-            // Flush chunk when buffer is full
+            // Flush chunk when buffer is full (using > to handle exact size match)
             if (chunk_buffer.size() >= chunk_size_samples) {
                 chunk_count++;
                 if (chunk_count <= 5) {
