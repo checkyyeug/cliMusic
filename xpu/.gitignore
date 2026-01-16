@@ -25,6 +25,8 @@ Makefile
 *.so
 *.dylib
 *.dll
+# Exception: Allow foobar2000 plugin DLLs
+!foobar2k/*.dll
 
 # Compiled Static libraries
 *.a
