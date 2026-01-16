@@ -219,7 +219,7 @@ public:
 
     /**
      * @brief Check if standard sample rate
-     * @note Includes standard rates and high-resolution rates up to 768kHz
+     * @note Includes standard rates and high-resolution rates up to DSD1024 (2.8224 MHz)
      * @param sample_rate Sample rate in Hz to check
      * @return true if the sample rate is a standard/common rate
      */
@@ -228,7 +228,8 @@ public:
                sample_rate == 88200 || sample_rate == 96000 ||
                sample_rate == 176400 || sample_rate == 192000 ||
                sample_rate == 352800 || sample_rate == 384000 ||
-               sample_rate == 705600 || sample_rate == 768000;
+               sample_rate == 705600 || sample_rate == 768000 ||
+               sample_rate == 1411200 || sample_rate == 2822400;
     }
 
     /**

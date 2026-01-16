@@ -876,7 +876,9 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
     impl_->dsd_file.seekg(impl_->dsd_data_offset);
 
     // Memory allocation safety: add size limit to prevent excessive memory usage
-    const size_t MAX_DSD_MEMORY = 256 * 1024 * 1024;  // 256MB limit
+    // DSD1024 stereo: 45.1584 MHz × 2 channels = ~90 MB/minute
+    // 1GB limit supports ~11 minutes of DSD1024 audio
+    const size_t MAX_DSD_MEMORY = 1024 * 1024 * 1024;  // 1GB limit for DSD1024 support
     if (impl_->dsd_data_size > MAX_DSD_MEMORY) {
         LOG_ERROR("DSD data size {} bytes ({} MB) exceeds maximum allowed {} MB",
                   impl_->dsd_data_size, impl_->dsd_data_size / (1024 * 1024),

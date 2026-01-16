@@ -128,8 +128,14 @@ public:
      * @brief Validate specific configuration values
      */
     static ErrorCode validateSampleRate(int sample_rate) {
-        // Support standard rates plus high-resolution rates including DSD256 (705.6kHz)
-        const int valid_rates[] = {44100, 48000, 96000, 192000, 384000, 705600, 768000};
+        // Support standard rates plus high-resolution rates including DSD1024 (2.8224 MHz PCM)
+        // DSD512 (22.5792 MHz) → 1.4112 MHz PCM (÷16)
+        // DSD1024 (45.1584 MHz) → 2.8224 MHz PCM (÷16)
+        const int valid_rates[] = {
+            44100, 48000, 96000, 192000, 384000, 705600, 768000,
+            1411200,  // DSD512 PCM equivalent
+            2822400   // DSD1024 PCM equivalent (DSD64 rate)
+        };
 
         for (int rate : valid_rates) {
             if (sample_rate == rate) {
