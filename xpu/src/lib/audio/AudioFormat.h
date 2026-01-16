@@ -219,11 +219,16 @@ public:
 
     /**
      * @brief Check if standard sample rate
+     * @note Includes standard rates and high-resolution rates up to 768kHz
+     * @param sample_rate Sample rate in Hz to check
+     * @return true if the sample rate is a standard/common rate
      */
     static bool isStandardSampleRate(int sample_rate) {
         return sample_rate == 44100 || sample_rate == 48000 ||
                sample_rate == 88200 || sample_rate == 96000 ||
-               sample_rate == 176400 || sample_rate == 192000;
+               sample_rate == 176400 || sample_rate == 192000 ||
+               sample_rate == 352800 || sample_rate == 384000 ||
+               sample_rate == 705600 || sample_rate == 768000;
     }
 
     /**

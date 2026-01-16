@@ -497,7 +497,8 @@ int main(int argc, char* argv[]) {
             LOG_INFO("Auto-resampling enabled, trying standard rates...");
 
             // Try standard sample rates in order of preference
-            std::vector<int> standard_rates = {48000, 44100, 96000, 192000};
+            // Include high-resolution rates for DSD256 (705.6kHz) and beyond
+            std::vector<int> standard_rates = {48000, 44100, 96000, 192000, 384000, 705600, 768000};
 
             for (int rate : standard_rates) {
                 if (rate == input_sample_rate) continue;  // Skip input rate (already failed)

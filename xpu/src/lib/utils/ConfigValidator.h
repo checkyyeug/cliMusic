@@ -128,7 +128,8 @@ public:
      * @brief Validate specific configuration values
      */
     static ErrorCode validateSampleRate(int sample_rate) {
-        const int valid_rates[] = {44100, 48000, 96000, 192000, 384000, 768000};
+        // Support standard rates plus high-resolution rates including DSD256 (705.6kHz)
+        const int valid_rates[] = {44100, 48000, 96000, 192000, 384000, 705600, 768000};
 
         for (int rate : valid_rates) {
             if (sample_rate == rate) {
