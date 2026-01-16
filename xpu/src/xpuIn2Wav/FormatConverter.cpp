@@ -1148,16 +1148,34 @@ ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
 
     // Track statistics
     size_t total_output_frames = 0;
-    int chunk_count = 0;
+    int chunk_count = 0;        // Input chunk counter
+    int output_chunk_count = 0; // Output chunk counter
     bool first_chunk = true;
 
-    // ===== Phase 3: Process chunks in a loop =====
+    // ===== Phase 3: Process chunks in a loop with aggregation =====
+    // When downsampling (e.g., DSD 2.8MHz -> 48kHz), output chunks are very small
+    // We need to aggregate multiple chunks before output to avoid:
+    // 1. Too many small writes (inefficient)
+    // 2. Pipe buffer filling up and blocking
+    // 3. xpuPlay not getting enough data per read
+
+    // Calculate minimum output chunk size (at least 1024 frames, ~21ms at 48kHz)
+    size_t min_output_frames = 1024;
+    size_t min_output_samples = min_output_frames * output_channels;
+
+    // Accumulation buffer for aggregated output
+    std::vector<float> accumulation_buffer;
+    accumulation_buffer.reserve(min_output_samples * 4);  // Pre-allocate for multiple chunks
+
+    // Accumulation samples counter
+    size_t accumulated_samples = 0;
+
     while (true) {
         // Read chunk size header (8 bytes) - directly into uint64_t to avoid memcpy
         uint64_t chunk_input_size = 0;
 
         if (!std::cin.read(reinterpret_cast<char*>(&chunk_input_size), sizeof(chunk_input_size))) {
-            // EOF or error
+            // EOF or error - flush any remaining accumulated data
             if (std::cin.eof()) {
                 LOG_INFO("End of input stream reached");
                 break;
@@ -1246,37 +1264,114 @@ ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
             output_buffer = std::move(remixed_buffer);
         }
 
-        // Track output frames
-        total_output_frames += output_buffer.size() / output_channels;
+        // ===== AGGREGATION LOGIC =====
+        // Add current output to accumulation buffer
+        size_t current_output_samples = output_buffer.size();
+        accumulated_samples += current_output_samples;
+
+        // Resize accumulation buffer to fit new data
+        size_t old_size = accumulation_buffer.size();
+        accumulation_buffer.resize(old_size + current_output_samples);
+
+        // Copy current output to accumulation buffer
+        std::memcpy(accumulation_buffer.data() + old_size, output_buffer.data(),
+                    current_output_samples * sizeof(float));
+
+        // Track output frames for statistics
+        total_output_frames += current_output_samples / output_channels;
+
+        // Only output when we have enough accumulated data
+        if (accumulated_samples >= min_output_samples) {
+            // Convert bit depth if needed
+            if (output_bit_depth != 32) {
+                ErrorCode ret = convertBitDepth(accumulation_buffer, 32, output_bit_depth, write_buffer);
+                if (ret != ErrorCode::Success) {
+                    LOG_ERROR("Bit depth conversion failed at chunk {}", chunk_count);
+                    return ret;
+                }
+            } else {
+                // Keep as 32-bit float
+                size_t byte_count = accumulation_buffer.size() * sizeof(float);
+                write_buffer.resize(byte_count);
+                std::memcpy(write_buffer.data(), accumulation_buffer.data(), byte_count);
+            }
+
+            // Write to stdout: [8-byte size header][PCM data]
+            uint64_t chunk_size = write_buffer.size();
+            std::cout.write(reinterpret_cast<const char*>(&chunk_size), sizeof(chunk_size));
+            std::cout.write(reinterpret_cast<const char*>(write_buffer.data()), write_buffer.size());
+            std::cout.flush();
+            #ifdef PLATFORM_WINDOWS
+            _flushall();  // Force flush all streams on Windows
+            #else
+            fflush(nullptr);  // Force flush all streams on Unix
+            #endif
+
+            if (!std::cout) {
+                LOG_ERROR("Failed to write to stdout at chunk {}", chunk_count);
+                return ErrorCode::FileWriteError;
+            }
+
+            if (verbose || chunk_count <= 10) {
+                size_t output_frames = accumulation_buffer.size() / output_channels;
+                LOG_INFO("Output aggregated chunk: {} frames ({} samples, {} bytes)",
+                         output_frames, accumulation_buffer.size(), chunk_size);
+
+                // Debug: Log first few samples to check if they're silent
+                if (output_chunk_count <= 2) {
+                    float min_val = accumulation_buffer[0];
+                    float max_val = accumulation_buffer[0];
+                    double sum = 0.0;
+                    size_t check_count = (accumulation_buffer.size() < 100) ? accumulation_buffer.size() : 100;
+                    for (size_t i = 0; i < check_count; ++i) {
+                        if (accumulation_buffer[i] < min_val) min_val = accumulation_buffer[i];
+                        if (accumulation_buffer[i] > max_val) max_val = accumulation_buffer[i];
+                        sum += (accumulation_buffer[i] >= 0) ? accumulation_buffer[i] : -accumulation_buffer[i];
+                    }
+                    double avg = sum / check_count;
+                    LOG_INFO("  Sample stats (first {}): min={}, max={}, avg_abs={}", check_count, min_val, max_val, avg);
+                }
+            }
+
+            output_chunk_count++;
+
+            // Clear accumulation buffer
+            accumulation_buffer.clear();
+            accumulated_samples = 0;
+        }
+    }
+
+    // Flush any remaining accumulated data
+    if (accumulated_samples > 0) {
+        LOG_INFO("Flushing remaining accumulated data: {} samples", accumulated_samples);
 
         // Convert bit depth if needed
         if (output_bit_depth != 32) {
-            ErrorCode ret = convertBitDepth(output_buffer, 32, output_bit_depth, write_buffer);
+            ErrorCode ret = convertBitDepth(accumulation_buffer, 32, output_bit_depth, write_buffer);
             if (ret != ErrorCode::Success) {
-                LOG_ERROR("Bit depth conversion failed at chunk {}", chunk_count);
+                LOG_ERROR("Bit depth conversion failed during flush");
                 return ret;
             }
         } else {
             // Keep as 32-bit float
-            size_t byte_count = output_buffer.size() * sizeof(float);
+            size_t byte_count = accumulation_buffer.size() * sizeof(float);
             write_buffer.resize(byte_count);
-            std::memcpy(write_buffer.data(), output_buffer.data(), byte_count);
+            std::memcpy(write_buffer.data(), accumulation_buffer.data(), byte_count);
         }
 
-        // Write to stdout: [8-byte size header][PCM data] for each chunk
+        // Write to stdout: [8-byte size header][PCM data]
         uint64_t chunk_size = write_buffer.size();
         std::cout.write(reinterpret_cast<const char*>(&chunk_size), sizeof(chunk_size));
         std::cout.write(reinterpret_cast<const char*>(write_buffer.data()), write_buffer.size());
         std::cout.flush();
         #ifdef PLATFORM_WINDOWS
-        _flushall();  // Force flush all streams on Windows
+        _flushall();
         #else
-        fflush(nullptr);  // Force flush all streams on Unix
+        fflush(nullptr);
         #endif
 
-
         if (!std::cout) {
-            LOG_ERROR("Failed to write to stdout at chunk {}", chunk_count);
+            LOG_ERROR("Failed to write flushed data to stdout");
             return ErrorCode::FileWriteError;
         }
     }

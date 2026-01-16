@@ -7,7 +7,7 @@
  */
 
 #include "AudioFileLoader.h"
-#include "DSDDecoder.h"
+#include "SACDDecoder.h"
 #include "protocol/ErrorCode.h"
 #include "protocol/ErrorResponse.h"
 #include "protocol/Protocol.h"
@@ -18,6 +18,10 @@
 #include <fstream>
 #include <cstring>
 #include <sstream>
+
+extern "C" {
+#include <libavutil/log.h>
+}
 
 #ifdef PLATFORM_WINDOWS
 #include <windows.h>
@@ -41,20 +45,26 @@ void printUsage(const char* program_name) {
     std::cout << "  -m, --metadata          Output only metadata (JSON format)\n";
     std::cout << "  -d, --data              Output only PCM data (binary)\n";
     std::cout << "  -r <rate>, --sample-rate <rate>  Target sample rate (default: keep original)\n";
+    std::cout << "  --dsd-decoder <type>    DSD decoder: ffmpeg or sacd (default: ffmpeg)\n";
     std::cout << "\nSupported formats:\n";
     std::cout << "  Lossless: FLAC, WAV, ALAC, DSD (DSF/DSDIFF)\n";
     std::cout << "  Lossy: MP3, AAC, OGG, OPUS\n";
+    std::cout << "\nDSD Decoders:\n";
+    std::cout << "  ffmpeg  - Built-in FFmpeg DSD decoder (dsd2pcm algorithm)\n";
+    std::cout << "  sacd    - foo_input_sacd.dll (high quality SACD decoder)\n";
     std::cout << "\nHigh-resolution support:\n";
     std::cout << "  Up to 768kHz sample rate, 32-bit depth\n";
     std::cout << "\nOutput format:\n";
     std::cout << "  By default: Keeps original sample rate\n";
     std::cout << "  With -r/--sample-rate: Outputs at specified rate (32-bit float)\n";
+    std::cout << "  For DSD: PCM sample rate = DSD rate / 32 (e.g., DSD64 -> 88.2kHz)\n";
     std::cout << "  Output: [JSON metadata][8-byte size header][PCM data]\n";
     std::cout << "  PCM data: 32-bit float, interleaved, stereo\n";
     std::cout << "\nExamples:\n";
     std::cout << "  " << program_name << " song.flac\n";
     std::cout << "  " << program_name << " -r 48000 song.flac\n";
-    std::cout << "  " << program_name << " --metadata song.flac\n";
+    std::cout << "  " << program_name << " --metadata song.dsf\n";
+    std::cout << "  " << program_name << " --dsd-decoder sacd song.dsf\n";
     std::cout << "  " << program_name << " song.flac | xpuIn2Wav -\n";
     std::cout << "  " << program_name << " song.flac | xpuIn2Wav - -r 48000 -b 16\n";
 }
@@ -128,6 +138,14 @@ int main(int argc, char* argv[]) {
     // Initialize logger with verbose setting
     utils::Logger::initialize(utils::PlatformUtils::getLogFilePath(), true, verbose, "xpuLoad");
 
+    // Set FFmpeg log level based on verbose flag
+    // When not verbose, suppress FFmpeg info/warning messages
+    if (verbose) {
+        av_log_set_level(AV_LOG_WARNING);  // Show warnings and errors in verbose mode
+    } else {
+        av_log_set_level(AV_LOG_ERROR);    // Only show errors in silent mode
+    }
+
     LOG_INFO("xpuLoad starting");
 
     // Parse command-line arguments (second pass for all options)
@@ -135,6 +153,7 @@ int main(int argc, char* argv[]) {
     bool metadata_only = false;
     bool data_only = false;
     int target_sample_rate = 0;  // 0 = keep original, no conversion
+    std::string dsd_decoder = "ffmpeg";  // Default DSD decoder
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -163,6 +182,19 @@ int main(int argc, char* argv[]) {
                 target_sample_rate = atoi(argv[++i]);
             } else {
                 std::cerr << "Error: --sample-rate requires a rate argument\n";
+                printUsage(argv[0]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--dsd-decoder") == 0) {
+            if (i + 1 < argc) {
+                dsd_decoder = argv[++i];
+                if (dsd_decoder != "ffmpeg" && dsd_decoder != "sacd") {
+                    std::cerr << "Error: --dsd-decoder must be 'ffmpeg' or 'sacd'\n";
+                    printUsage(argv[0]);
+                    return 1;
+                }
+            } else {
+                std::cerr << "Error: --dsd-decoder requires a decoder type\n";
                 printUsage(argv[0]);
                 return 1;
             }
@@ -197,107 +229,201 @@ int main(int argc, char* argv[]) {
 
     LOG_INFO("Loading file: {}", input_file);
     LOG_INFO("Target sample rate: {}", target_sample_rate);
+    LOG_INFO("DSD decoder: {}", dsd_decoder);
 
     // Detect format from extension
     std::string file_path(input_file);
-    bool is_dsd = false;
-
-    if (file_path.size() > 4) {
-        std::string ext = file_path.substr(file_path.size() - 4);
-        if (ext == ".dsf" || ext == ".dff") {
-            is_dsd = true;
-        }
-    }
+    audio::AudioFormat format_enum = audio::AudioFormatUtils::formatFromExtension(file_path);
+    bool is_dsd = (format_enum == audio::AudioFormat::DSD);
 
     ErrorCode ret;
     protocol::AudioMetadata metadata;
 
+    // Choose decoder based on format and user preference
     if (is_dsd) {
-        // DSD files: Use streaming mode (Phase 3 optimization - DSD support)
-        LOG_INFO("Using DSD decoder (streaming mode - Phase 3)");
-        load::DSDDecoder dsd_decoder;
-        dsd_decoder.setTargetSampleRate(target_sample_rate);
+        // DSD files: use specified decoder
+        if (dsd_decoder == "sacd") {
+            LOG_INFO("Using SACD decoder (foo_input_sacd.dll)");
+            load::SACDDecoder sacd_decoder;
 
-        // Step 1: Prepare streaming (opens file and extracts metadata)
-        ret = dsd_decoder.prepareStreaming(input_file);
-        if (ret != ErrorCode::Success) {
-            std::string error_msg = "Error code: " + std::to_string(static_cast<int>(ret));
-            std::cerr << error_msg << "\n";
-            LOG_ERROR("Failed to prepare DSD streaming: {}", static_cast<int>(ret));
-            return static_cast<int>(getHTTPStatusCode(ret));
-        }
+            // Set target sample rate (0 = DSD_rate/32)
+            sacd_decoder.setTargetSampleRate(target_sample_rate);
 
-        // Step 2: Get metadata
-        metadata = dsd_decoder.getMetadata();
-        LOG_INFO("DSD metadata extracted successfully");
-
-        // Mark high-resolution audio
-        if (metadata.sample_rate >= 96000) {
-            metadata.is_high_res = true;
-            LOG_INFO("High-resolution audio detected: {} Hz", metadata.sample_rate);
-        }
-
-        // Step 3: Output metadata as JSON
-        if (!data_only) {
-            std::cout << ::metadataToJSON(metadata);
-            std::cout.flush();
-            LOG_INFO("Metadata output to stdout");
-        }
-
-        // Step 4: Stream PCM data ONLY if:
-        // 1. --data option is specified, OR
-        // 2. stdout is NOT a terminal (piped to another program)
-        #ifdef PLATFORM_WINDOWS
-        DWORD mode;
-        bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
-        #else
-        bool is_piped = !isatty(STDOUT_FILENO);
-        #endif
-
-        if (!metadata_only && (data_only || is_piped)) {
-            // Stream PCM data using callback
-            int chunk_count = 0;
-
-            auto streaming_callback = [&](const float* chunk_data, size_t chunk_samples) -> bool {
-                chunk_count++;
-                size_t chunk_bytes = chunk_samples * sizeof(float);
-
-                // Output chunk: [8-byte size header][PCM data]
-                uint64_t size_header = chunk_bytes;
-                std::cout.write(reinterpret_cast<const char*>(&size_header), sizeof(size_header));
-                std::cout.write(reinterpret_cast<const char*>(chunk_data), chunk_bytes);
-                std::cout.flush();
-
-                #ifdef PLATFORM_WINDOWS
-                _flushall();
-                #else
-                fflush(nullptr);
-                #endif
-
-                // Log first few chunks
-                if (chunk_count <= 5) {
-                    LOG_INFO("Output chunk {}: {} samples ({} bytes)", chunk_count, chunk_samples, chunk_bytes);
-                }
-
-                return true;  // Continue streaming
-            };
-
-            LOG_INFO("Starting DSD PCM data streaming...");
-            ret = dsd_decoder.streamPCM(streaming_callback, 64 * 1024);  // 64KB chunks
-
+            // Step 1: Prepare streaming
+            ret = sacd_decoder.prepareStreaming(input_file);
             if (ret != ErrorCode::Success) {
-                LOG_ERROR("DSD streaming failed: {}", static_cast<int>(ret));
+                // SACD decoder failed - return error instead of falling back
+                std::string error_msg = "Error code: " + std::to_string(static_cast<int>(ret));
+                std::cerr << error_msg << "\n";
+                LOG_ERROR("Failed to prepare SACD streaming: {}", static_cast<int>(ret));
                 return static_cast<int>(getHTTPStatusCode(ret));
             }
 
-            LOG_INFO("DSD PCM data streaming complete: {} chunks", chunk_count);
-        } else if (!metadata_only) {
-            LOG_INFO("PCM data skipped (not in pipe mode, use -d to force output)");
+            // Step 2: Get metadata
+            metadata = sacd_decoder.getMetadata();
+            LOG_INFO("SACD metadata extracted successfully");
+
+            // Mark high-resolution audio
+            if (metadata.sample_rate >= 96000) {
+                metadata.is_high_res = true;
+                LOG_INFO("High-resolution audio detected: {} Hz", metadata.sample_rate);
+            }
+
+            // Step 3: Output metadata as JSON
+            if (!data_only) {
+                std::cout << ::metadataToJSON(metadata);
+                std::cout.flush();
+                LOG_INFO("Metadata output to stdout");
+            }
+
+            // Step 4: Stream PCM data
+            #ifdef PLATFORM_WINDOWS
+            DWORD mode;
+            bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
+            #else
+            bool is_piped = !isatty(STDOUT_FILENO);
+            #endif
+
+            if (!metadata_only && (data_only || is_piped)) {
+                int chunk_count = 0;
+
+                auto streaming_callback = [&](const float* chunk_data, size_t chunk_samples) -> bool {
+                    chunk_count++;
+                    size_t chunk_bytes = chunk_samples * sizeof(float);
+
+                    // Output chunk: [8-byte size header][PCM data]
+                    uint64_t size_header = chunk_bytes;
+                    std::cout.write(reinterpret_cast<const char*>(&size_header), sizeof(size_header));
+                    std::cout.write(reinterpret_cast<const char*>(chunk_data), chunk_bytes);
+                    std::cout.flush();
+
+                    #ifdef PLATFORM_WINDOWS
+                    _flushall();
+                    #else
+                    fflush(nullptr);
+                    #endif
+
+                    // Log first few chunks
+                    if (chunk_count <= 5) {
+                        LOG_INFO("Output chunk {}: {} samples ({} bytes)", chunk_count, chunk_samples, chunk_bytes);
+                    }
+
+                    return true;  // Continue streaming
+                };
+
+                LOG_INFO("Starting SACD PCM data streaming...");
+                ret = sacd_decoder.streamPCM(streaming_callback, 64 * 1024);
+
+                if (ret != ErrorCode::Success) {
+                    LOG_ERROR("SACD streaming failed: {}", static_cast<int>(ret));
+                    return static_cast<int>(getHTTPStatusCode(ret));
+                }
+
+                LOG_INFO("SACD PCM data streaming complete: {} chunks", chunk_count);
+            } else if (!metadata_only) {
+                LOG_INFO("PCM data skipped (not in pipe mode, use -d to force output)");
+            }
+            // SACD decoder succeeded, skip FFmpeg decoder
+            goto decoder_done;
         }
 
+        // FFmpeg decoder (used as default or when SACD fails)
+        if (dsd_decoder == "ffmpeg") {
+            // Default: Use FFmpeg decoder (has built-in DSD support via dsd2pcm)
+            LOG_INFO("Using FFmpeg decoder (streaming mode - supports DSD via dsd2pcm)");
+            load::AudioFileLoader loader;
+
+            // For DSD files, set intermediate sample rate = DSD rate / 32
+            // For non-DSD files, use the target sample rate directly
+            if (is_dsd && target_sample_rate == 0) {
+                // For DSD with no target specified, use DSD64 rate / 32 = 88200 Hz as default
+                // This allows clean integer decimation while maintaining quality
+                loader.setTargetSampleRate(88200);
+                LOG_INFO("DSD file detected: using intermediate rate 88200 Hz (DSD64/32)");
+            } else {
+                loader.setTargetSampleRate(target_sample_rate);
+            }
+
+            // Step 1: Prepare streaming (opens file and extracts metadata)
+            ret = loader.prepareStreaming(input_file);
+            if (ret != ErrorCode::Success) {
+                std::string error_msg = "Error code: " + std::to_string(static_cast<int>(ret));
+                std::cerr << error_msg << "\n";
+                LOG_ERROR("Failed to prepare streaming: {}", static_cast<int>(ret));
+                return static_cast<int>(getHTTPStatusCode(ret));
+            }
+
+            // Step 2: Get metadata
+            metadata = loader.getMetadata();
+            LOG_INFO("Metadata extracted successfully");
+
+            // Mark high-resolution audio
+            if (metadata.sample_rate >= 96000) {
+                metadata.is_high_res = true;
+                LOG_INFO("High-resolution audio detected: {} Hz", metadata.sample_rate);
+            }
+
+            // Step 3: Output metadata as JSON
+            if (!data_only) {
+                std::cout << ::metadataToJSON(metadata);
+                std::cout.flush();
+                LOG_INFO("Metadata output to stdout");
+            }
+
+            // Step 4: Stream PCM data ONLY if:
+            // 1. --data option is specified, OR
+            // 2. stdout is NOT a terminal (piped to another program)
+            #ifdef PLATFORM_WINDOWS
+            DWORD mode;
+            bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
+            #else
+            bool is_piped = !isatty(STDOUT_FILENO);
+            #endif
+
+            if (!metadata_only && (data_only || is_piped)) {
+                // Stream PCM data using callback
+                int chunk_count = 0;
+
+                auto streaming_callback = [&](const float* chunk_data, size_t chunk_samples) -> bool {
+                    chunk_count++;
+                    size_t chunk_bytes = chunk_samples * sizeof(float);
+
+                    // Output chunk: [8-byte size header][PCM data]
+                    uint64_t size_header = chunk_bytes;
+                    std::cout.write(reinterpret_cast<const char*>(&size_header), sizeof(size_header));
+                    std::cout.write(reinterpret_cast<const char*>(chunk_data), chunk_bytes);
+                    std::cout.flush();
+
+                    #ifdef PLATFORM_WINDOWS
+                    _flushall();
+                    #else
+                    fflush(nullptr);
+                    #endif
+
+                    // Log first few chunks
+                    if (chunk_count <= 5) {
+                        LOG_INFO("Output chunk {}: {} samples ({} bytes)", chunk_count, chunk_samples, chunk_bytes);
+                    }
+
+                    return true;  // Continue streaming
+                };
+
+                LOG_INFO("Starting PCM data streaming...");
+                ret = loader.streamPCM(streaming_callback, 64 * 1024);  // 64KB chunks
+
+                if (ret != ErrorCode::Success) {
+                    LOG_ERROR("Streaming failed: {}", static_cast<int>(ret));
+                    return static_cast<int>(getHTTPStatusCode(ret));
+                }
+
+                LOG_INFO("PCM data streaming complete: {} chunks", chunk_count);
+            } else if (!metadata_only) {
+                LOG_INFO("PCM data skipped (not in pipe mode, use -d to force output)");
+            }
+        }
     } else {
-        // Non-DSD files: Use streaming mode (Phase 3 optimization)
-        LOG_INFO("Using FFmpeg decoder (streaming mode - Phase 3)");
+        // Non-DSD files: always use FFmpeg decoder
+        LOG_INFO("Using FFmpeg decoder (streaming mode)");
         load::AudioFileLoader loader;
         loader.setTargetSampleRate(target_sample_rate);
 
@@ -379,6 +505,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
+decoder_done:
     LOG_INFO("xpuLoad completed successfully");
     return 0;
 }

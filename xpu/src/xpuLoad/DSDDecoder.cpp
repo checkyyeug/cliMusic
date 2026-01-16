@@ -102,6 +102,7 @@ public:
     uint32_t dsd_rate = 0;       // DSD sample rate (e.g., 2822400 for DSD64)
     uint32_t channels = 0;
     uint64_t dsd_sample_count = 0;
+    uint32_t block_size = 0;     // Block size per channel (for DSF format)
 
     // Streaming support
     std::ifstream dsd_file;
@@ -195,15 +196,20 @@ ErrorCode DSDDecoder::parseDSF(const std::string& filepath) {
     impl_->dsd_sample_count = fmt.sample_count;
 
     impl_->metadata.channels = fmt.channel_num;
-    impl_->metadata.sample_rate = fmt.sampling_freq / 8; // Convert to Hz equivalent
+    // Store ORIGINAL DSD rate (for information)
+    impl_->metadata.original_sample_rate = fmt.sampling_freq;
+    // OUTPUT sample rate will be set by decodeDSDToPCM()
+    impl_->metadata.sample_rate = 0;
     impl_->metadata.bit_depth = 1; // DSD is 1-bit
+    impl_->metadata.original_bit_depth = 1;
     impl_->metadata.format = "DSD";
     impl_->metadata.format_name = "DSD";
 
     // Calculate duration
     double duration = static_cast<double>(fmt.sample_count) / fmt.sampling_freq;
     impl_->metadata.duration = duration;
-    impl_->metadata.sample_count = static_cast<uint64_t>(duration * impl_->metadata.sample_rate);
+    // Sample count will be updated by decodeDSDToPCM after conversion
+    impl_->metadata.sample_count = 0;
 
     LOG_INFO("DSD Format: DSF");
     LOG_INFO("  Channels: {}", fmt.channel_num);
@@ -310,15 +316,20 @@ ErrorCode DSDDecoder::parseDSDIFF(const std::string& filepath) {
             impl_->dsd_sample_count = prop.sample_count;
 
             impl_->metadata.channels = prop.channels;
-            impl_->metadata.sample_rate = prop.sample_rate / 8; // Convert to Hz equivalent
+            // Store ORIGINAL DSD rate (for information)
+            impl_->metadata.original_sample_rate = prop.sample_rate;
+            // OUTPUT sample rate will be set by decodeDSDToPCM()
+            impl_->metadata.sample_rate = 0;
             impl_->metadata.bit_depth = 1; // DSD is 1-bit
+            impl_->metadata.original_bit_depth = 1;
             impl_->metadata.format = "DSDIFF";
             impl_->metadata.format_name = "DSDIFF";
 
             // Calculate duration
             double duration = static_cast<double>(prop.sample_count) / prop.sample_rate;
             impl_->metadata.duration = duration;
-            impl_->metadata.sample_count = static_cast<uint64_t>(duration * impl_->metadata.sample_rate);
+            // Sample count will be updated by decodeDSDToPCM after conversion
+            impl_->metadata.sample_count = 0;
 
             LOG_INFO("DSDIFF Properties:");
             LOG_INFO("  Version: {}", prop.version);
@@ -414,10 +425,6 @@ ErrorCode DSDDecoder::decodeDSDToPCM() {
     std::vector<float> decoded_samples;
     decoded_samples.reserve(total_output_samples * target_channels);
 
-    // DSD to PCM decoder with noise shaping
-    // Use 5th-order noise shaping for professional quality
-    std::vector<float> noise_shaper_state(5, 0.0f);
-
     uint64_t dsd_index = 0;
     uint64_t samples_decoded = 0;
 
@@ -433,29 +440,30 @@ ErrorCode DSDDecoder::decodeDSDToPCM() {
                 uint8_t byte = impl_->dsd_data[dsd_index / 8];
                 uint8_t bit = (byte >> (7 - (dsd_index % 8))) & 1;
 
-                // Convert to bipolar (-1 or +1)
+                // Convert to bipolar (-1 or +1) and accumulate
+                // Note: No noise shaping during DSD decoding - that's only for encoding
                 int32_t dsd_bit = bit * 2 - 1;
-
-                // Apply noise shaping (5th order)
-                float error = dsd_bit;
-                for (int j = 0; j < 5; ++j) {
-                    error -= noise_shaper_state[j] * (5 - j) * 0.1f;
-                }
-
-                accumulator += static_cast<int32_t>(error);
-
-                // Update noise shaper state
-                for (int j = 4; j > 0; --j) {
-                    noise_shaper_state[j] = noise_shaper_state[j - 1];
-                }
-                noise_shaper_state[0] = error;
+                accumulator += dsd_bit;
 
                 bits_processed++;
                 dsd_index += impl_->channels; // Interleaved channels
             }
 
             // Average and normalize to float [-1.0, 1.0]
+            // DSD signal typically has low amplitude, so we apply a gain factor
+            // Standard DSD decoders apply gain to match PCM levels
             float sample = static_cast<float>(accumulator) / bits_processed;
+
+            // Apply gain compensation for DSD
+            // DSD signals typically have lower RMS than PCM, so we boost the signal
+            // This gain factor (64x or +36dB) brings DSD to comparable levels with PCM
+            // Using conservative gain to avoid clipping
+            const float dsd_gain = 64.0f;
+            sample *= dsd_gain;
+
+            // Clamp to [-1.0, 1.0] to prevent clipping
+            if (sample > 1.0f) sample = 1.0f;
+            if (sample < -1.0f) sample = -1.0f;
 
             // Apply low-pass filter (simple moving average for decimation)
             decoded_samples.push_back(sample);
@@ -536,21 +544,36 @@ ErrorCode DSDDecoder::prepareStreaming(const std::string& filepath) {
         impl_->channels = fmt.channel_num;
         impl_->dsd_rate = fmt.sampling_freq;
         impl_->dsd_sample_count = fmt.sample_count;
+        impl_->block_size = fmt.block_size;
+
+        // Use DSD64 (2.8224 MHz) as intermediate rate for all DSD formats
+        // This allows clean integer decimation from any DSD rate (DSD128, DSD256, DSD512, etc.)
+        // For DSD512: 22579200 / 2822400 = 8 (integer - perfect!)
+        // For DSD256: 11289600 / 2822400 = 4 (integer - perfect!)
+        // For DSD128: 5644800 / 2822400 = 2 (integer - perfect!)
+        // For DSD64:  2822400 / 2822400 = 1 (no decimation needed!)
+        const uint32_t dsd64_rate = 2822400;  // 64 × 44.1 kHz
+        const uint32_t intermediate_sample_rate = dsd64_rate;
+
+        LOG_INFO("Using intermediate sample rate: {} Hz (DSD64)", intermediate_sample_rate);
 
         impl_->metadata.file_path = filepath;
         impl_->metadata.channels = fmt.channel_num;
-        impl_->metadata.sample_rate = fmt.sampling_freq / 8; // Convert to Hz equivalent
-        impl_->metadata.bit_depth = 1; // DSD is 1-bit
-        impl_->metadata.original_sample_rate = impl_->metadata.sample_rate;
-        impl_->metadata.original_bit_depth = 1;
+        // Store ORIGINAL DSD rate (for information)
+        impl_->metadata.original_sample_rate = fmt.sampling_freq;
+        // Store OUTPUT sample rate (what streamPCM will actually produce)
+        impl_->metadata.sample_rate = intermediate_sample_rate;
+        impl_->metadata.bit_depth = 32; // 32-bit float output from streamPCM
+        impl_->metadata.original_bit_depth = 1; // DSD is 1-bit
         impl_->metadata.format = "DSD";
         impl_->metadata.format_name = "DSD";
         impl_->metadata.is_lossless = true;
 
-        // Calculate duration
+        // Calculate duration based on DSD sample count and rate
         double duration = static_cast<double>(fmt.sample_count) / fmt.sampling_freq;
         impl_->metadata.duration = duration;
-        impl_->metadata.sample_count = static_cast<uint64_t>(duration * impl_->metadata.sample_rate);
+        // Sample count will be updated by streamPCM after actual conversion
+        impl_->metadata.sample_count = 0;
 
         // Mark high-resolution audio
         if (impl_->metadata.sample_rate >= 96000) {
@@ -561,7 +584,10 @@ ErrorCode DSDDecoder::prepareStreaming(const std::string& filepath) {
         LOG_INFO("  Channels: {}", fmt.channel_num);
         LOG_INFO("  DSD Rate: {} Hz ({}x oversampling)", fmt.sampling_freq, fmt.sampling_freq / 44100);
         LOG_INFO("  Samples: {}", fmt.sample_count);
+        LOG_INFO("  Block size: {} bytes per channel", fmt.block_size);
         LOG_INFO("  Duration: {:.2f} seconds", duration);
+        LOG_INFO("  Output metadata: sample_rate={} Hz (DSD64), original_sample_rate={} Hz",
+                 impl_->metadata.sample_rate, impl_->metadata.original_sample_rate);
 
         // Read data chunk
         DSFDataChunk data;
@@ -644,20 +670,30 @@ ErrorCode DSDDecoder::prepareStreaming(const std::string& filepath) {
                 impl_->dsd_rate = prop.sample_rate;
                 impl_->dsd_sample_count = prop.sample_count;
 
+                // Use DSD64 (2.8224 MHz) as intermediate rate for all DSD formats
+                // This allows clean integer decimation from any DSD rate (DSD128, DSD256, DSD512, etc.)
+                const uint32_t dsd64_rate = 2822400;  // 64 × 44.1 kHz
+                const uint32_t intermediate_sample_rate = dsd64_rate;
+
+                LOG_INFO("Using intermediate sample rate: {} Hz (DSD64)", intermediate_sample_rate);
+
                 impl_->metadata.file_path = filepath;
                 impl_->metadata.channels = prop.channels;
-                impl_->metadata.sample_rate = prop.sample_rate / 8; // Convert to Hz equivalent
-                impl_->metadata.bit_depth = 1; // DSD is 1-bit
-                impl_->metadata.original_sample_rate = impl_->metadata.sample_rate;
-                impl_->metadata.original_bit_depth = 1;
+                // Store ORIGINAL DSD rate (for information)
+                impl_->metadata.original_sample_rate = prop.sample_rate;
+                // Store OUTPUT sample rate (what streamPCM will actually produce)
+                impl_->metadata.sample_rate = intermediate_sample_rate;
+                impl_->metadata.bit_depth = 32; // 32-bit float output from streamPCM
+                impl_->metadata.original_bit_depth = 1; // DSD is 1-bit
                 impl_->metadata.format = "DSDIFF";
                 impl_->metadata.format_name = "DSDIFF";
                 impl_->metadata.is_lossless = true;
 
-                // Calculate duration
+                // Calculate duration based on DSD sample count and rate
                 double duration = static_cast<double>(prop.sample_count) / prop.sample_rate;
                 impl_->metadata.duration = duration;
-                impl_->metadata.sample_count = static_cast<uint64_t>(duration * impl_->metadata.sample_rate);
+                // Sample count will be updated by streamPCM after actual conversion
+                impl_->metadata.sample_count = 0;
 
                 // Mark high-resolution audio
                 if (impl_->metadata.sample_rate >= 96000) {
@@ -739,99 +775,154 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
     LOG_INFO("Streaming DSD to PCM in chunks: {} bytes", chunk_size_bytes);
 
     // DSD decoding parameters
-    const uint32_t target_sample_rate = (impl_->target_sample_rate > 0) ?
-                                         static_cast<uint32_t>(impl_->target_sample_rate) : 48000;
     const uint32_t target_channels = 2;
-    const uint32_t decimation_factor = impl_->dsd_rate / target_sample_rate;
 
-    // Calculate output size
-    uint64_t total_output_samples = impl_->dsd_sample_count / decimation_factor;
+    // For DSD512 (22.5792 MHz), we need to decimate in stages to maintain quality
+    // Stage 1: DSD512 → DSD64 (2.8224 MHz) - 8x decimation
+    // Stage 2: DSD64 → Target rate (handled by xpuIn2Wav)
+    // We output at DSD64 rate and let xpuIn2Wav handle the final resampling
+
+    // Use DSD64 (2.8224 MHz) as intermediate rate for all DSD formats
+    const uint32_t dsd64_rate = 2822400;  // 64 × 44.1 kHz
+    const uint32_t intermediate_sample_rate = dsd64_rate;
+
+    LOG_INFO("Using intermediate sample rate: {} Hz (DSD64)", intermediate_sample_rate);
+
+    const uint32_t decimation_factor = impl_->dsd_rate / intermediate_sample_rate;
+
+    // Calculate output size (impl_->dsd_sample_count is per-channel DSD samples)
+    // Output frames = (DSD samples per channel / decimation factor)
+    // Note: We don't divide by target_channels because dsd_sample_count is already per-channel
+    uint64_t total_output_frames = impl_->dsd_sample_count / decimation_factor;
 
     // Update metadata with output format
-    impl_->metadata.sample_rate = target_sample_rate;
+    // Note: We output at intermediate_sample_rate, and let xpuIn2Wav handle final resampling
+    impl_->metadata.sample_rate = intermediate_sample_rate;
     impl_->metadata.channels = target_channels;
     impl_->metadata.bit_depth = 32; // 32-bit float output
-    impl_->metadata.sample_count = total_output_samples;
+    impl_->metadata.sample_count = total_output_frames * target_channels;
 
     // Chunk buffer for accumulating samples before callback
     size_t chunk_size_samples = chunk_size_bytes / sizeof(float);
     std::vector<float> chunk_buffer;
     chunk_buffer.reserve(chunk_size_samples);
 
-    // DSD to PCM decoder with noise shaping
-    std::vector<float> noise_shaper_state(5, 0.0f);
-
-    // Seek to DSD data
+    // Seek to DSD data and read all DSD data into memory
+    // Note: For true streaming we would read in chunks, but for simplicity
+    // we load all DSD data here since we already have the file open
     impl_->dsd_file.seekg(impl_->dsd_data_offset);
 
-    // Read DSD data in chunks and decode
-    uint64_t dsd_bytes_remaining = impl_->dsd_data_size;
-    uint64_t dsd_index = 0;
+    std::vector<uint8_t> dsd_data(impl_->dsd_data_size);
+    impl_->dsd_file.read(reinterpret_cast<char*>(dsd_data.data()), impl_->dsd_data_size);
+    size_t dsd_bytes_read = impl_->dsd_file.gcount();
+
+    if (dsd_bytes_read != impl_->dsd_data_size) {
+        LOG_ERROR("Failed to read complete DSD data: expected {}, got {}",
+                 impl_->dsd_data_size, dsd_bytes_read);
+        return ErrorCode::FileReadError;
+    }
+
+    // Close file since we have all data in memory
+    impl_->dsd_file.close();
+
+    LOG_INFO("DSD data loaded: {} bytes", dsd_data.size());
+
+    // Decode DSD to PCM (same logic as batch mode)
     uint64_t samples_decoded = 0;
     int chunk_count = 0;
 
-    // Buffer for reading DSD data
-    constexpr size_t DSD_READ_BUFFER_SIZE = 64 * 1024;  // 64KB
-    std::vector<uint8_t> dsd_read_buffer(DSD_READ_BUFFER_SIZE);
+    // Note: DSF format stores channels separately (not bit-interleaved)
+    // For stereo: all channel 0 data comes first, then all channel 1 data
+    size_t channel_data_size = dsd_data.size() / target_channels;  // Per-channel data size in bytes
 
-    while (samples_decoded < total_output_samples && dsd_bytes_remaining > 0) {
-        // Calculate how much to read
-        size_t bytes_to_read = std::min(DSD_READ_BUFFER_SIZE, static_cast<size_t>(dsd_bytes_remaining));
-        impl_->dsd_file.read(reinterpret_cast<char*>(dsd_read_buffer.data()), bytes_to_read);
-        size_t bytes_read = impl_->dsd_file.gcount();
+    while (samples_decoded < total_output_frames) {
+        // Process each channel
+        for (uint32_t ch = 0; ch < target_channels && samples_decoded < total_output_frames; ++ch) {
+            // Calculate the bit index for this channel
+            // DSF format: channel 0 data first, then channel 1 data, etc.
+            size_t channel_bit_index = ch * channel_data_size * 8 + (samples_decoded * decimation_factor);
 
-        if (bytes_read == 0) break;
+            // Check if we have enough data for this channel
+            if (channel_bit_index + decimation_factor > dsd_data.size() * 8) {
+                // Not enough data, we're at the end
+                goto streaming_complete;
+            }
 
-        // Process DSD data
-        for (size_t i = 0; i < bytes_read && samples_decoded < total_output_samples; ++i) {
-            uint8_t byte = dsd_read_buffer[i];
+            // Accumulate DSD bits for decimation
+            int32_t accumulator = 0;
+            uint32_t bits_processed = 0;
+            int ones_count = 0;  // Debug: count how many bits are 1
 
-            // Process each bit in the byte
-            for (int bit = 7; bit >= 0 && samples_decoded < total_output_samples; --bit) {
-                // Process each channel
-                for (uint32_t ch = 0; ch < std::min(impl_->channels, target_channels); ++ch) {
-                    // Get DSD bit
-                    uint8_t dsd_bit = (byte >> bit) & 1;
+            // Accumulate decimation_factor DSD bits
+            for (uint32_t i = 0; i < decimation_factor; ++i) {
+                // Get DSD bit (MSB first)
+                uint8_t byte = dsd_data[channel_bit_index / 8];
+                uint8_t bit = (byte >> (7 - (channel_bit_index % 8))) & 1;
 
-                    // Convert to bipolar (-1 or +1)
-                    int32_t dsd_value = dsd_bit * 2 - 1;
+                // Convert to bipolar (-1 or +1) and accumulate
+                // Note: No noise shaping during DSD decoding - that's only for encoding
+                int32_t dsd_bit = bit * 2 - 1;
+                accumulator += dsd_bit;
+                if (bit == 1) ones_count++;
 
-                    // Apply noise shaping (5th order)
-                    float error = dsd_value;
-                    for (int j = 0; j < 5; ++j) {
-                        error -= noise_shaper_state[j] * (5 - j) * 0.1f;
-                    }
+                bits_processed++;
+                channel_bit_index++;  // Move to next bit in this channel
+            }
 
-                    // Update noise shaper state
-                    for (int j = 4; j > 0; --j) {
-                        noise_shaper_state[j] = noise_shaper_state[j - 1];
-                    }
-                    noise_shaper_state[0] = error;
+            // Average and normalize to float [-1.0, 1.0]
+            // DSD signal typically has low amplitude, so we apply a gain factor
+            // Standard DSD decoders apply gain to match PCM levels
+            float sample = static_cast<float>(accumulator) / bits_processed;
 
-                    // Accumulate for decimation (simplified)
-                    float sample = static_cast<float>(error) / decimation_factor;
-                    chunk_buffer.push_back(sample);
+            // Apply gain compensation for DSD
+            // DSD signals typically have lower RMS than PCM, so we boost the signal
+            // This gain factor (64x or +36dB) brings DSD to comparable levels with PCM
+            // Using conservative gain to avoid clipping
+            const float dsd_gain = 64.0f;
+            sample *= dsd_gain;
 
-                    // Flush chunk when buffer is full
-                    if (chunk_buffer.size() >= chunk_size_samples) {
-                        chunk_count++;
-                        bool continue_streaming = callback(chunk_buffer.data(), chunk_buffer.size());
-                        chunk_buffer.clear();
+            // Clamp to [-1.0, 1.0] to prevent clipping
+            if (sample > 1.0f) sample = 1.0f;
+            if (sample < -1.0f) sample = -1.0f;
 
-                        if (!continue_streaming) {
-                            LOG_INFO("Streaming stopped by callback");
-                            goto cleanup;
-                        }
-                    }
+            // Debug: Log first few samples with detailed bit information
+            if (samples_decoded < 5) {
+                LOG_INFO("DSD decoded [ch={}, frame={}]: acc={}, ones={}, bits={}, normalized={}",
+                         ch, samples_decoded, accumulator, ones_count, bits_processed, sample);
+                // Log first few bytes for inspection
+                if (samples_decoded == 0 && ch == 0) {
+                    size_t byte_offset = (ch * channel_data_size * 8) / 8;
+                    LOG_INFO("  First 8 bytes at channel offset {}: {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x}",
+                             byte_offset,
+                             dsd_data[byte_offset], dsd_data[byte_offset+1], dsd_data[byte_offset+2], dsd_data[byte_offset+3],
+                             dsd_data[byte_offset+4], dsd_data[byte_offset+5], dsd_data[byte_offset+6], dsd_data[byte_offset+7]);
                 }
+            }
 
-                samples_decoded++;
-                dsd_index += impl_->channels;
+            chunk_buffer.push_back(sample);
+
+            // Flush chunk when buffer is full
+            if (chunk_buffer.size() >= chunk_size_samples) {
+                chunk_count++;
+                if (chunk_count <= 5) {
+                    LOG_INFO("Output chunk {}: {} samples ({} bytes)",
+                            chunk_count, chunk_buffer.size(),
+                            chunk_buffer.size() * sizeof(float));
+                }
+                bool continue_streaming = callback(chunk_buffer.data(), chunk_buffer.size());
+                chunk_buffer.clear();
+
+                if (!continue_streaming) {
+                    LOG_INFO("Streaming stopped by callback");
+                    return ErrorCode::Success;
+                }
             }
         }
 
-        dsd_bytes_remaining -= bytes_read;
+        samples_decoded++;
     }
+
+streaming_complete:
 
     // Flush final chunk
     if (!chunk_buffer.empty()) {
@@ -839,11 +930,7 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
         callback(chunk_buffer.data(), chunk_buffer.size());
     }
 
-cleanup:
-    LOG_INFO("DSD streaming complete: {} chunks, {} samples", chunk_count, samples_decoded);
-
-    // Close file
-    impl_->dsd_file.close();
+    LOG_INFO("DSD streaming complete: {} chunks, {} output samples", chunk_count, samples_decoded * target_channels);
 
     return ErrorCode::Success;
 }

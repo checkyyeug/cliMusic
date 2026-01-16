@@ -39,11 +39,11 @@ public:
         auto logger = getInstance();
         // Set log level based on verbose flag
         // verbose = true: show all logs (debug and above)
-        // verbose = false: only show warnings and errors
+        // verbose = false: only show errors (suppress warnings)
         if (verbose) {
             spdlog::set_level(spdlog::level::debug);
         } else {
-            spdlog::set_level(spdlog::level::warn);
+            spdlog::set_level(spdlog::level::err);
         }
 
         // Set custom pattern with program name
@@ -59,7 +59,7 @@ public:
         if (verbose) {
             spdlog::set_level(spdlog::level::debug);
         } else {
-            spdlog::set_level(spdlog::level::warn);
+            spdlog::set_level(spdlog::level::err);
         }
     }
 

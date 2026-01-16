@@ -6,6 +6,9 @@
 #include "AudioFileLoader.h"
 #include "utils/Logger.h"
 #include <cstring>
+#include <string>
+#include <codecvt>
+#include <locale>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -18,6 +21,134 @@ using namespace xpu;
 
 namespace xpu {
 namespace load {
+
+/**
+ * @brief Clean and validate UTF-8 string
+ * Removes invalid UTF-8 sequences and handles potential UTF-16 data
+ * Detects UTF-16 LE/BE with or without BOM
+ */
+static std::string cleanUTF8(const char* input) {
+    if (!input) return "";
+
+    std::string result;
+    const unsigned char* p = (const unsigned char*)input;
+    size_t len = strlen((const char*)p);
+
+    // Detect if this looks like UTF-16 LE (with or without BOM)
+    // UTF-16 LE has pattern: low byte, high byte, low byte, high byte...
+    // ASCII characters in UTF-16 LE appear as: ascii_byte, 0x00, ascii_byte, 0x00...
+    bool is_utf16_le = false;
+    bool has_bom_le = (len >= 2 && p[0] == 0xFF && p[1] == 0xFE);
+
+    // Check for UTF-16 LE pattern (alternating byte, null for ASCII)
+    if (!has_bom_le && len >= 4) {
+        int utf16_le_score = 0;
+        for (size_t i = 0; i < std::min(len, size_t(20)); i += 2) {
+            // Check for pattern: printable char followed by null
+            if (i + 1 < len && p[i] >= 32 && p[i] <= 126 && p[i + 1] == 0) {
+                utf16_le_score++;
+            }
+        }
+        // If most characters fit this pattern, it's likely UTF-16 LE
+        is_utf16_le = (utf16_le_score >= 2);
+    }
+
+    if (has_bom_le || is_utf16_le) {
+        // UTF-16 LE detected - convert ASCII characters only
+        size_t start = has_bom_le ? 2 : 0;
+        for (size_t i = start; i + 1 < len; i += 2) {
+            unsigned char low = p[i];
+            unsigned char high = p[i + 1];
+            // Extract ASCII characters from UTF-16 LE
+            if (high == 0 && low >= 32 && low <= 126) {
+                result += low;
+            } else if (high == 0 && low == 0) {
+                break;  // Null terminator
+            }
+            // Skip non-ASCII UTF-16 characters
+        }
+        return result;
+    }
+
+    // Check for UTF-16 BE BOM (FE FF)
+    bool has_bom_be = (len >= 2 && p[0] == 0xFE && p[1] == 0xFF);
+
+    // Detect if this looks like UTF-16 BE (with or without BOM)
+    // UTF-16 BE has pattern: high byte, low byte, high byte, low byte...
+    // ASCII characters in UTF-16 BE appear as: 0x00, ascii_byte, 0x00, ascii_byte...
+    bool is_utf16_be = false;
+    if (!has_bom_be && len >= 4) {
+        int utf16_be_score = 0;
+        for (size_t i = 0; i < std::min(len, size_t(20)); i += 2) {
+            // Check for pattern: null followed by printable char
+            if (i + 1 < len && p[i] == 0 && p[i + 1] >= 32 && p[i + 1] <= 126) {
+                utf16_be_score++;
+            }
+        }
+        // If most characters fit this pattern, it's likely UTF-16 BE
+        is_utf16_be = (utf16_be_score >= 2);
+    }
+
+    if (has_bom_be || is_utf16_be) {
+        // UTF-16 BE detected - convert ASCII characters only
+        size_t start = has_bom_be ? 2 : 0;
+        for (size_t i = start; i + 1 < len; i += 2) {
+            unsigned char high = p[i];
+            unsigned char low = p[i + 1];
+            // Extract ASCII characters from UTF-16 BE
+            if (high == 0 && low >= 32 && low <= 126) {
+                result += low;
+            } else if (high == 0 && low == 0) {
+                break;  // Null terminator
+            }
+            // Skip non-ASCII UTF-16 characters
+        }
+        return result;
+    }
+
+    // Process as UTF-8 or ASCII
+    while (*p) {
+        if (*p < 128) {
+            // ASCII character (0-127) - always safe
+            result += *p++;
+        } else if ((*p & 0xE0) == 0xC0) {
+            // 2-byte UTF-8 sequence
+            if (p[1] && (p[1] & 0xC0) == 0x80) {
+                result += *p++;
+                result += *p++;
+            } else {
+                // Invalid UTF-8, skip this byte
+                p++;
+            }
+        } else if ((*p & 0xF0) == 0xE0) {
+            // 3-byte UTF-8 sequence
+            if (p[1] && p[2] && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+                result += *p++;
+                result += *p++;
+                result += *p++;
+            } else {
+                // Invalid UTF-8, skip this byte
+                p++;
+            }
+        } else if ((*p & 0xF8) == 0xF0) {
+            // 4-byte UTF-8 sequence
+            if (p[1] && p[2] && p[3] && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+                result += *p++;
+                result += *p++;
+                result += *p++;
+                result += *p++;
+            } else {
+                // Invalid UTF-8, skip this byte
+                p++;
+            }
+        } else {
+            // Invalid UTF-8 start byte, skip
+            p++;
+        }
+    }
+
+    return result;
+}
 
 /**
  * @brief Implementation class
@@ -163,10 +294,18 @@ ErrorCode AudioFileLoader::load(const std::string& filepath) {
 
     // Setup resampler to convert to standard format
     // Target: target_sample_rate Hz, stereo, 32-bit float planar
-    // If target_sample_rate is 0, keep the original sample rate
-    int actual_target_rate = (impl_->target_sample_rate > 0) ?
-                            impl_->target_sample_rate :
-                            impl_->codec_ctx->sample_rate;
+    // For DSD: if target_sample_rate is 0, use DSD rate / 32
+    // For non-DSD: if target_sample_rate is 0, keep the original sample rate
+    int actual_target_rate;
+
+    if (format_enum == audio::AudioFormat::DSD && impl_->target_sample_rate == 0) {
+        // DSD with no target specified: use DSD rate / 32
+        actual_target_rate = impl_->codec_ctx->sample_rate / 32;
+    } else if (impl_->target_sample_rate > 0) {
+        actual_target_rate = impl_->target_sample_rate;
+    } else {
+        actual_target_rate = impl_->codec_ctx->sample_rate;
+    }
 
     LOG_INFO("Setting up resampler: requested_rate={}, actual_rate={}, original_rate={}",
              impl_->target_sample_rate, actual_target_rate, impl_->codec_ctx->sample_rate);
@@ -417,7 +556,8 @@ ErrorCode AudioFileLoader::prepareStreaming(const std::string& filepath) {
 
     // Update metadata - preserve original file properties
     impl_->metadata.file_path = filepath;
-    impl_->metadata.sample_rate = codec_par->sample_rate;
+    int original_sample_rate = codec_par->sample_rate;
+    impl_->metadata.original_sample_rate = original_sample_rate;
     impl_->metadata.channels = codec_par->ch_layout.nb_channels;
 
     // Get original bit depth
@@ -425,13 +565,45 @@ ErrorCode AudioFileLoader::prepareStreaming(const std::string& filepath) {
     if (source_bit_depth == 0) {
         source_bit_depth = codec_par->bits_per_coded_sample;
     }
-    if (source_bit_depth == 0) {
+
+    // Detect audio format
+    audio::AudioFormat format_enum = audio::AudioFormatUtils::formatFromExtension(filepath);
+
+    // For DSD format, the original bit depth is always 1-bit
+    // codec_par->bits_per_coded_sample might be 8 (byte storage), but actual DSD is 1-bit
+    if (format_enum == audio::AudioFormat::DSD) {
+        source_bit_depth = 1;  // DSD is always 1-bit
+    } else if (source_bit_depth == 0) {
         source_bit_depth = codec_par->format == AV_SAMPLE_FMT_FLTP ? 32 :
                             codec_par->format == AV_SAMPLE_FMT_S16 || codec_par->format == AV_SAMPLE_FMT_S16P ? 16 :
                             codec_par->format == AV_SAMPLE_FMT_S32 || codec_par->format == AV_SAMPLE_FMT_S32P ? 32 : 24;
     }
-    impl_->metadata.bit_depth = source_bit_depth;
+
     impl_->metadata.original_bit_depth = source_bit_depth;
+
+    // Calculate output sample rate and bit depth
+    // For DSD: PCM rate = DSD rate / 32, output is 32-bit float
+    // For non-DSD: use target_sample_rate if specified, otherwise keep original
+    int output_sample_rate;
+    if (format_enum == audio::AudioFormat::DSD) {
+        // DSD: PCM sample rate = DSD rate / 32 (e.g., DSD64: 2822400/32 = 88200 Hz)
+        if (impl_->target_sample_rate > 0) {
+            output_sample_rate = impl_->target_sample_rate;
+        } else {
+            output_sample_rate = original_sample_rate / 32;  // Default: DSD/32
+        }
+        impl_->metadata.bit_depth = 32;  // Output is always 32-bit float
+    } else {
+        // Non-DSD: use target sample rate or keep original
+        if (impl_->target_sample_rate > 0) {
+            output_sample_rate = impl_->target_sample_rate;
+        } else {
+            output_sample_rate = original_sample_rate;
+        }
+        impl_->metadata.bit_depth = 32;  // Output is always 32-bit float
+    }
+
+    impl_->metadata.sample_rate = output_sample_rate;
 
     // Calculate duration
     if (impl_->format_ctx->duration != AV_NOPTS_VALUE) {
@@ -444,18 +616,34 @@ ErrorCode AudioFileLoader::prepareStreaming(const std::string& filepath) {
     AVDictionaryEntry* tag = nullptr;
     while ((tag = av_dict_get(impl_->format_ctx->metadata, "", tag, AV_DICT_IGNORE_SUFFIX))) {
         std::string key = tag->key;
-        std::string value = tag->value ? tag->value : "";
+        const char* value_ptr = tag->value;
+
+        if (!value_ptr) continue;
+
+        // Clean UTF-8 encoding to avoid display issues
+        std::string value = cleanUTF8(value_ptr);
 
         if (key == "title") impl_->metadata.title = value;
         else if (key == "artist") impl_->metadata.artist = value;
         else if (key == "album") impl_->metadata.album = value;
-        else if (key == "track") impl_->metadata.track_number = std::stoi(value);
+        else if (key == "track") {
+            try {
+                impl_->metadata.track_number = std::stoi(value);
+            } catch (...) {
+                // Ignore conversion errors
+            }
+        }
         else if (key == "genre") impl_->metadata.genre = value;
-        else if (key == "date") impl_->metadata.year = std::stoi(value);
+        else if (key == "date") {
+            try {
+                impl_->metadata.year = std::stoi(value);
+            } catch (...) {
+                impl_->metadata.year = value;  // Keep as string if conversion fails
+            }
+        }
     }
 
-    // Detect audio format
-    audio::AudioFormat format_enum = audio::AudioFormatUtils::formatFromExtension(filepath);
+    // Set format information
     impl_->metadata.format = audio::AudioFormatUtils::formatToString(format_enum);
     impl_->metadata.format_name = impl_->metadata.format;
 
@@ -518,9 +706,19 @@ ErrorCode AudioFileLoader::streamPCM(StreamingCallback callback, size_t chunk_si
     }
 
     // Setup resampler
-    int actual_target_rate = (impl_->target_sample_rate > 0) ?
-                            impl_->target_sample_rate :
-                            impl_->codec_ctx->sample_rate;
+    // For DSD: if target_sample_rate is 0, use DSD rate / 32
+    // For non-DSD: if target_sample_rate is 0, use original rate
+    int actual_target_rate;
+    audio::AudioFormat format_enum = audio::AudioFormatUtils::formatFromExtension(impl_->metadata.file_path);
+
+    if (format_enum == audio::AudioFormat::DSD && impl_->target_sample_rate == 0) {
+        // DSD with no target specified: use DSD rate / 32
+        actual_target_rate = impl_->codec_ctx->sample_rate / 32;
+    } else if (impl_->target_sample_rate > 0) {
+        actual_target_rate = impl_->target_sample_rate;
+    } else {
+        actual_target_rate = impl_->codec_ctx->sample_rate;
+    }
 
     LOG_INFO("Setting up resampler: requested_rate={}, actual_rate={}, original_rate={}",
              impl_->target_sample_rate, actual_target_rate, impl_->codec_ctx->sample_rate);
@@ -540,10 +738,12 @@ ErrorCode AudioFileLoader::streamPCM(StreamingCallback callback, size_t chunk_si
         return ErrorCode::InvalidOperation;
     }
 
-    // Update metadata with target sample rate
-    impl_->metadata.original_sample_rate = impl_->metadata.sample_rate;
-    impl_->metadata.original_bit_depth = impl_->metadata.bit_depth;
-    impl_->metadata.sample_rate = actual_target_rate;
+    // Verify that actual_target_rate matches the expected output sample rate
+    // (they should match since prepareStreaming already calculated this)
+    if (actual_target_rate != impl_->metadata.sample_rate) {
+        LOG_WARN("Sample rate mismatch: prepareStreaming set {}, but streamPCM calculated {}",
+                 impl_->metadata.sample_rate, actual_target_rate);
+    }
 
     // Decode and stream in chunks
     AVPacket* packet = av_packet_alloc();

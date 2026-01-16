@@ -688,6 +688,19 @@ int main(int argc, char* argv[]) {
         chunk_count++;
         if (chunk_count <= 3) {
             LOG_INFO("Processing chunk {}: {} samples, {} frames", chunk_count, samples, input_frames);
+
+            // Debug: Check if samples are silent
+            float min_val = audio_buffer[0];
+            float max_val = audio_buffer[0];
+            double sum = 0.0;
+            size_t check_count = (samples < 100) ? samples : 100;
+            for (size_t i = 0; i < check_count; ++i) {
+                if (audio_buffer[i] < min_val) min_val = audio_buffer[i];
+                if (audio_buffer[i] > max_val) max_val = audio_buffer[i];
+                sum += (audio_buffer[i] >= 0) ? audio_buffer[i] : -audio_buffer[i];
+            }
+            double avg = sum / check_count;
+            LOG_INFO("  Input sample stats (first {}): min={}, max={}, avg_abs={}", check_count, min_val, max_val, avg);
         }
 
         // Resample if needed
@@ -801,7 +814,10 @@ int main(int argc, char* argv[]) {
     backend->stop();
 
     LOG_INFO("Playback completed");
-    std::cout << "{\"event\":\"playback_stopped\"}" << std::endl;
+    // Only output playback_stopped event in verbose mode
+    if (verbose) {
+        std::cout << "{\"event\":\"playback_stopped\"}" << std::endl;
+    }
 
     return 0;
 }
