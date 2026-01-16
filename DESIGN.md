@@ -1,6 +1,6 @@
-# XPU AI-Ready 音乐播放系统 设计文档 v3.8
+# XPU AI-Ready 音乐播放系统 设计文档 v3.9
 
-> **版本说明**: v3.8 - 流式模式自动检测统一（移除 -S 选项），streaming_mode 元数据字段自动传递
+> **版本说明**: v3.9 - 支持 DSD512 和 DSD1024 格式，最高支持 2.8224 MHz PCM，内存限制提升至 1GB
 
 ---
 
@@ -236,7 +236,7 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
 | 🎯 **CLI-First** | 每个模块都是独立的可执行文件，遵循 Unix 哲学 |
 | 🤖 **AI-Ready** | 原生支持 MCP 协议，可与 Claude/GPT-4 等 AI 无缝集成 |
 | 🧩 **完全模块化** | 一个程序只做一件事，可通过管道灵活组合 |
-| 🚀 **高性能** | C/C++ 实现，支持 768kHz 无损音频，极低延迟 |
+| 🚀 **高性能** | C/C++ 实现，支持 2.8224 MHz 无损音频（DSD1024），极低延迟 |
 | 🌐 **分布式** | 支持服务器 + 边缘设备分离架构 |
 | 🛠️ **可扩展** | 支持 GPU 加速、远程执行、插件系统 |
 
@@ -257,7 +257,7 @@ XPU 是一款专为 AI 时代设计的模块化音乐播放系统。每个功能
 - **多层封装**：CLI → REST API → MCP，逐层抽象
 - **完全模块化**：Unix 哲学，一个程序只做一件事
 - **跨平台**：Windows, macOS, Linux, ARM (树莓派)
-- **专业音质**：只支持无损格式（FLAC/WAV/ALAC/DSD），最高支持 768kHz
+- **专业音质**：只支持无损格式（FLAC/WAV/ALAC/DSD），最高支持 2.8224 MHz（DSD1024）
 - **高性能**：C/C++ 实现，极低延迟
 - **网络流传输**：支持服务器到播放器的实时音频流传输
 
@@ -1849,7 +1849,7 @@ xpuProcess --fade-in 2000        # 淡入淡出
 | 约束 | MVP 目标 | 未来版本 |
 |------|---------|---------|
 | 音频格式 | FLAC, WAV | ALAC, DSD |
-| 采样率 | 最高 96kHz | 最高 768kHz |
+| 采样率 | 最高 96kHz | 最高 2.8224 MHz (DSD1024) |
 | 位深 | 16/24-bit | 32-bit |
 | 声道 | 立体声 (2.0) | 5.1, 7.1 |
 | 同时播放 | 1 个流 | 多流混音 |
@@ -2371,13 +2371,16 @@ xpuLoad 支持两种 DSD 解码器，通过 `--dsd-decoder` 选项选择：
 
 **DSD 转 PCM 策略：**
 
-- **PCM 采样率 = DSD 采样率 / 32**
-  - DSD64 (2.8224 MHz) → PCM @ 88.2 kHz
-  - DSD128 (5.6448 MHz) → PCM @ 176.4 kHz
-  - DSD256 (11.2896 MHz) → PCM @ 352.8 kHz
-  - DSD512 (22.5792 MHz) → PCM @ 705.6 kHz
+- **两阶段降频策略**：DSD → DSD64 (中间) → 目标 PCM 采样率
+- **PCM 采样率 = DSD 采样率 / 16** (直接输出) 或 / 32 (通过 DSD64 中间速率)
+  - DSD64 (2.8224 MHz) → PCM @ 176.4 kHz (÷16) 或 88.2 kHz (÷32)
+  - DSD128 (5.6448 MHz) → PCM @ 352.8 kHz (÷16) 或 176.4 kHz (÷32)
+  - DSD256 (11.2896 MHz) → PCM @ 705.6 kHz (÷16) 或 352.8 kHz (÷32)
+  - DSD512 (22.5792 MHz) → PCM @ **1.4112 MHz** (÷16) ✓ **v3.9 新增**
+  - DSD1024 (45.1584 MHz) → PCM @ **2.8224 MHz** (÷16) ✓ **v3.9 新增**
 - **位深度**：32-bit float
 - **声道**：立体声（2 声道）
+- **整数降频因子**：DSD1024=16, DSD512=8, DSD256=4, DSD128=2, DSD64=1 (无损转换)
 
 **技术实现：**
 
@@ -2572,9 +2575,9 @@ magnitude.bin 和 phase.bin 格式：
 | 格式 | 扩展名 | 最高采样率 | 最高位深 |
 |------|--------|-----------|---------|
 | FLAC | .flac | 384 kHz | 32-bit |
-| WAV | .wav | 768 kHz | 32-bit |
+| WAV | .wav | 2.8224 MHz | 32-bit |
 | ALAC | .m4a | 192 kHz | 32-bit |
-| DSD | .dsf, .dsd | 705.6/768 kHz | 1-bit |
+| DSD | .dsf, .dsd | 2.8224 MHz (DSD1024) | 1-bit |
 
 **采样率支持：**
 
@@ -2583,7 +2586,7 @@ magnitude.bin 和 phase.bin 格式：
 高采样率：      88.2 kHz, 96 kHz
 超高采样率：    176.4 kHz, 192 kHz
 极高采样率：    352.8 kHz, 384 kHz
-顶级采样率：    705.6 kHz, 768 kHz
+顶级采样率：    705.6 kHz (DSD256), 1.4112 MHz (DSD512), 2.8224 MHz (DSD1024)
 ```
 
 **质量模式：**
@@ -3060,6 +3063,110 @@ metadata.streaming_mode = (is_piped || data_only);
 2. **代码简化**：移除条件判断，统一流式处理路径
 3. **向后兼容**：移除的 `-S` 选项在 v3.8 中不再需要
 4. **一致性**：所有模块行为一致，stdin 模式即为流式模式
+
+---
+
+**🎯 v3.9 DSD512 和 DSD1024 超高清格式支持（DSD512/DSD1024 Ultra-High-Res Support）**
+
+**更新概述：**
+
+v3.9 版本实现了对 DSD512 和 DSD1024 格式的完整支持，将 PCM 采样率上限提升至 2.8224 MHz，这是目前商业音频中最高质量的格式之一。
+
+**DSD 格式支持范围：**
+
+| DSD 格式 | DSD 采样率 | PCM 输出 (÷16) | 降频因子到 DSD64 | 状态 |
+|---------|-----------|----------------|------------------|------|
+| DSD64 | 2.8224 MHz | 176.4 kHz | 1× | ✅ 完全支持 |
+| DSD128 | 5.6448 MHz | 352.8 kHz | 2× | ✅ 完全支持 |
+| DSD256 | 11.2896 MHz | 705.6 kHz | 4× | ✅ 完全支持 |
+| **DSD512** | **22.5792 MHz** | **1.4112 MHz** | **8×** | ✅ **v3.9 新增** |
+| **DSD1024** | **45.1584 MHz** | **2.8224 MHz** | **16×** | ✅ **v3.9 新增** |
+
+**核心架构改进：**
+
+1. **两阶段降频策略**：
+   ```
+   DSD1024 (45.1584 MHz)
+       ↓ ÷16 (整数，无损)
+   DSD64 (2.8224 MHz) ← 中间速率
+       ↓ ÷64 (可变)
+   目标 PCM 采样率 (用户指定)
+   ```
+
+2. **整数降频因子**：
+   - 所有降频因子都是整数 (1, 2, 4, 8, 16)
+   - 保证无损转换，无精度损失
+   - DSD64 作为通用中间格式
+
+3. **内存容量提升**：
+   - 从 256MB 提升至 **1GB**
+   - 支持 DSD1024 立体声约 11 分钟音频
+
+**技术实现：**
+
+```cpp
+// DSDDecoder.cpp - 内存限制
+const size_t MAX_DSD_MEMORY = 1024 * 1024 * 1024;  // 1GB (was 256MB)
+
+// ConfigValidator.h - 采样率验证
+const int valid_rates[] = {
+    44100, 48000, 96000, 192000, 384000, 705600, 768000,
+    1411200,  // DSD512 PCM equivalent
+    2822400   // DSD1024 PCM equivalent
+};
+```
+
+**FFmpeg 集成：**
+
+- 使用 `avcodec_find_decoder()` 自动检测 DSD 编解码器
+- 支持 `AV_CODEC_ID_DSD_LSB`, `AV_CODEC_ID_DSD_MSB` 等
+- 无采样率硬编码限制
+- swresample 支持任意采样率转换
+
+**内存需求对比：**
+
+| DSD 格式 | 比特率 (立体声) | 每分钟内存 | 5 分钟曲目 | 10 分钟曲目 |
+|---------|----------------|-----------|------------|-------------|
+| DSD64 | ~6.75 Mbps | ~6.75 MB | ~34 MB | ~68 MB |
+| DSD128 | ~13.5 Mbps | ~13.5 MB | ~68 MB | ~135 MB |
+| DSD256 | ~27 Mbps | ~27 MB | ~135 MB | ~270 MB |
+| DSD512 | ~54 Mbps | ~54 MB | ~270 MB | ~540 MB |
+| **DSD1024** | ~90 Mbps | ~90 MB | ~450 MB | ~900 MB |
+
+**完整管道支持：**
+
+```
+┌─────────┐    ┌──────────┐    ┌──────────┐    ┌─────────┐
+│ xpuLoad │ ── │ xpuIn2Wav │ ── │xpuProcess │ ── │ xpuPlay │
+└─────────┘    └──────────┘    └──────────┘    └─────────┘
+     ✅             ✅                ✅             ✅
+   DSD512/1024    重采样到          DSP 处理       播放
+   解码          任意采样率        任意采样率     任意采样率
+```
+
+**使用示例：**
+
+```bash
+# 播放 DSD512 文件
+xpuLoad music_ds512.dsf | xpuIn2Wav | xpuPlay
+
+# 播放 DSD1024 文件
+xpuLoad music_ds1024.dsf | xpuIn2Wav | xpuPlay
+
+# DSD1024 重采样到 48kHz（实时）
+xpuLoad music_ds1024.dsf | xpuIn2Wav -r 48000 | xpuPlay
+
+# 保持 DSD1024 原始采样率（2.8224 MHz PCM）
+xpuLoad music_ds1024.dsf | xpuIn2Wav | xpuPlay
+```
+
+**优势总结：**
+
+1. **业界领先**：支持 DSD1024，目前最高的商业音频格式
+2. **无损转换**：整数降频因子，无精度损失
+3. **向后兼容**：所有 DSD 格式统一处理
+4. **内存安全**：1GB 限制支持长曲目
+5. **完整管道**：端到端 DSD512/1024 支持
 
 ---
 
@@ -9072,7 +9179,7 @@ std::string getSuggestion(ErrorCode code) {
             return "Convert the file to a supported format: FLAC, WAV, ALAC, or DSD";
 
         case ErrorCode::SampleRateNotSupported:
-            return "Use --rate option to convert to a supported sample rate (44100-768000 Hz)";
+            return "Use --rate option to convert to a supported sample rate (44100-2822400 Hz, up to DSD1024)";
 
         case ErrorCode::CacheCorrupted:
             return "Clear the corrupted cache: xpuCache clear --cache-id <id> and regenerate";
@@ -9574,7 +9681,7 @@ private:
   "tools": [
     {
       "name": "xpu_play",
-      "description": "Play a music file. Only lossless formats supported: FLAC, WAV, ALAC, DSD (DSF/DSD). Supports up to 768kHz/32-bit.",
+      "description": "Play a music file. Only lossless formats supported: FLAC, WAV, ALAC, DSD (DSF/DSD). Supports up to 2.8224 MHz/32-bit (DSD1024).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -9839,8 +9946,8 @@ private:
         "properties": {
           "sample_rate": {
             "type": "number",
-            "enum": [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000],
-            "description": "Sample rate in Hz. Standard: 44.1/48kHz, High: 88.2/96kHz, Ultra: 176.4/192kHz, Extreme: 352.8/384kHz, Master: 705.6/768kHz"
+            "enum": [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000, 1411200, 2822400],
+            "description": "Sample rate in Hz. Standard: 44.1/48kHz, High: 88.2/96kHz, Ultra: 176.4/192kHz, Extreme: 352.8/384kHz, Master: 705.6/768kHz, Ultra-Master: 1.4112/2.8224 MHz (DSD512/DSD1024)"
           },
           "bit_depth": {
             "type": "number",
