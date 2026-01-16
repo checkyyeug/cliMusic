@@ -33,6 +33,7 @@ struct AudioMetadata {
     bool is_high_res;
     int original_sample_rate;  // Original sample rate before resampling
     int original_bit_depth;    // Original bit depth before conversion
+    bool streaming_mode;  // true = streaming mode (data follows), false = file mode
 
     AudioMetadata()
         : track_number(0)
@@ -45,7 +46,8 @@ struct AudioMetadata {
         , is_lossless(false)
         , is_high_res(false)
         , original_sample_rate(0)
-        , original_bit_depth(0) {}
+        , original_bit_depth(0)
+        , streaming_mode(false) {}  // Default to file mode
 };
 
 /**
@@ -71,6 +73,7 @@ inline std::string metadataToJSON(const AudioMetadata& meta) {
     json += "  \"bitrate\": " + std::to_string(meta.bitrate) + ",\n";
     json += "  \"is_lossless\": " + std::string(meta.is_lossless ? "true" : "false") + ",\n";
     json += "  \"is_high_res\": " + std::string(meta.is_high_res ? "true" : "false") + ",\n";
+    json += "  \"streaming_mode\": " + std::string(meta.streaming_mode ? "true" : "false") + ",\n";
     json += "  \"file_path\": \"" + meta.file_path + "\"\n";
     json += "}\n";
     return json;

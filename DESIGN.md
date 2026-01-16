@@ -1,6 +1,6 @@
-# XPU AI-Ready 音乐播放系统 设计文档 v3.7
+# XPU AI-Ready 音乐播放系统 设计文档 v3.8
 
-> **版本说明**: v3.7 - 完善元数据处理（UTF-16 编码检测、DSD 元数据修正），foo_input_sacd.dll 集成框架完成（完整实现延后至 Phase 4）
+> **版本说明**: v3.8 - 流式模式自动检测统一（移除 -S 选项），streaming_mode 元数据字段自动传递
 
 ---
 
@@ -2683,24 +2683,31 @@ window = "hann"                 # 窗函数
 **命令行选项：**
 
 ```bash
-# 启用串流重采样（新增选项）
-xpuLoad song.flac | xpuIn2Wav --streaming -r 48000 | xpuPlay -
-
-# 或简写
-xpuLoad song.flac | xpuIn2Wav -S -r 48000 | xpuPlay -
+# 流式模式自动检测（v3.8+）
+# 当 stdin 检测到管道时，自动启用流式模式
+xpuLoad song.flac | xpuIn2Wav -r 48000 | xpuPlay -
 
 # 指定分块大小（可选）
-xpuLoad song.flac | xpuIn2Wav --streaming --chunk-size 8192 -r 48000 | xpuPlay -
+xpuLoad song.flac | xpuIn2Wav --chunk-size 8192 -r 48000 | xpuPlay -
 
-# 禁用串流模式（默认行为，向后兼容）
-xpuLoad song.flac | xpuIn2Wavr 48000 | xpuPlay -
+# streaming_mode 通过元数据自动传递
+# xpuLoad 检测管道状态并设置 streaming_mode 标志
+# xpuIn2Wav、xpuProcess、xpuPlay 从元数据读取 streaming_mode
 ```
 
-**新增参数：**
+**v3.8 更新 - 流式模式自动检测：**
+
+| 特性 | 说明 |
+|------|------|
+| **自动检测** | xpuLoad 使用 `GetConsoleMode` (Windows) / `isatty` (Unix) 检测管道 |
+| **元数据传递** | `streaming_mode` 字段在 `AudioMetadata` 中传递 |
+| **无需 -S 选项** | 所有模块自动从 stdin 检测并启用流式模式 |
+| **向后兼容** | 移除了 `-S/--streaming` 选项，简化用户接口 |
+
+**参数：**
 
 | 选项 | 长选项 | 参数 | 默认值 | 说明 |
 |------|--------|------|--------|------|
-| `-S` | `--streaming` | 无 | false | 启用串流重采样模式 |
 | | `--chunk-size` | 整数 | 4096 | 每次处理的帧数（frames） |
 | | `--buffer-size` | 整数 | 65536 | 输出缓冲区大小（字节） |
 
@@ -2929,40 +2936,130 @@ buffer_size = 65536          # 输出缓冲区大小（字节）
 4. 不同分块大小的性能
 ```
 
-**实现优先级：**
+**实现状态（v3.8 完成）：**
 
 Phase 1（核心功能）：
 1. ✅ StreamingResampler 类已实现
-2. ⬜ FormatConverter::convertStdinToStdoutStreaming() 实现
-3. ⬜ 命令行参数解析（--streaming, -S）
-4. ⬜ 基本测试
+2. ✅ FormatConverter::convertStdinToStdoutStreaming() 实现
+3. ✅ 流式模式自动检测（无需 -S 选项）
+4. ✅ streaming_mode 元数据字段传递
+5. ✅ 基本测试完成
 
 Phase 2（优化）：
-1. ⬜ 可配置分块大小
-2. ⬜ 缓冲区大小优化
-3. ⬜ 性能基准测试
-4. ⬜ 文档完善
+1. ✅ 可配置分块大小（--chunk-size）
+2. ✅ 缓冲区大小优化（--buffer-size）
+3. ✅ 性能基准测试
+4. ✅ 文档完善
 
 Phase 3（高级特性）：
 1. ⬜ 自适应分块大小
 2. ⬜ 进度报告
 3. ⬜ 配置文件支持
 
-**使用示例：**
+**使用示例（v3.8+）：**
 
 ```bash
-# 场景1：实时播放大文件（推荐串流模式）
-xpuLoad large_album.flac | xpuIn2Wav -S -r 48000 | xpuPlay -
+# 场景1：实时播放大文件（自动流式模式）
+xpuLoad large_album.flac | xpuIn2Wav -r 48000 | xpuPlay -
 
-# 场景2：小文件批量转换（默认批量模式即可）
-xpuLoad song.flac | xpuIn2Wav -o output.wav
+# 场景2：小文件批量转换（文件模式）
+xpuIn2Wav -i input.flac -o output.wav
 
-# 场景3：网络流传输（低延迟优先）
-xpuLoad song.flac | xpuIn2Wav -S --chunk-size 2048 -r 48000 | xpuStream --target remote:8080
+# 场景3：网络流传输（低延迟优先，自定义分块）
+xpuLoad song.flac | xpuIn2Wav --chunk-size 2048 -r 48000 | xpuStream --target remote:8080
 
-# 场景4：离线高质量转换（批量模式）
+# 场景4：离线高质量转换
 xpuIn2Wav -i input.flac -r 96000 -b 32 -q best
 ```
+
+---
+
+**🎯 v3.8 流式模式自动检测统一（Streaming Mode Auto-Detection）**
+
+**更新概述：**
+
+v3.8 版本实现了流式模式的自动检测和统一，移除了手动 `-S/--streaming` 选项，通过元数据中的 `streaming_mode` 字段自动传递流式状态，进一步简化了用户接口。
+
+**核心改进：**
+
+1. **自动管道检测**：
+   - xpuLoad 使用平台特定 API 检测输出是否为管道
+     - Windows: `GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode)`
+     - Unix/Linux/macOS: `isatty(STDOUT_FILENO)`
+   - 当检测到管道时，自动设置 `streaming_mode = true`
+
+2. **元数据传递**：
+   - `AudioMetadata` 结构体新增 `bool streaming_mode` 字段
+   - xpuLoad 在输出元数据时包含流式模式标志
+   - 下游模块（xpuIn2Wav、xpuProcess、xpuPlay）从元数据读取流式模式
+
+3. **简化用户接口**：
+   - 移除 xpuIn2Wav 的 `-S/--streaming` 选项
+   - 所有模块在读取 stdin 时自动启用流式模式
+   - 无需用户手动指定流式模式
+
+**技术实现：**
+
+```cpp
+// Protocol.h - AudioMetadata 结构体
+struct AudioMetadata {
+    // ... 其他字段 ...
+    bool streaming_mode;  // true = 流式模式, false = 文件模式
+
+    AudioMetadata() : streaming_mode(false) {}
+};
+
+// xpuLoad.cpp - 管道检测
+#ifdef PLATFORM_WINDOWS
+    DWORD mode;
+    bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
+#else
+    bool is_piped = !isatty(STDOUT_FILENO);
+#endif
+
+metadata.streaming_mode = (is_piped || data_only);
+```
+
+**命令行对比：**
+
+| 场景 | v3.7 (旧) | v3.8 (新) |
+|------|-----------|-----------|
+| 基本播放 | `xpuLoad song.flac \| xpuIn2Wav -S \| xpuPlay` | `xpuLoad song.flac \| xpuIn2Wav \| xpuPlay` |
+| 重采样 | `xpuLoad song.flac \| xpuIn2Wav -S -r 48000 \| xpuPlay` | `xpuLoad song.flac \| xpuIn2Wav -r 48000 \| xpuPlay` |
+| 自定义分块 | `xpuLoad song.flac \| xpuIn2Wav -S --chunk-size 8192 \| xpuPlay` | `xpuLoad song.flac \| xpuIn2Wav --chunk-size 8192 \| xpuPlay` |
+
+**模块状态：**
+
+| 模块 | 流式模式支持 | 自动检测 | 需要更改 |
+|------|-------------|---------|---------|
+| xpuLoad | ✅ | ✅ | 无（已实现） |
+| xpuIn2Wav | ✅ | ✅ | 移除 -S 选项 |
+| xpuProcess | ✅ | ✅ | 无（已自动） |
+| xpuPlay | ✅ | ✅ | 无（已自动） |
+
+**元数据格式：**
+
+```json
+{
+  "success": true,
+  "metadata": {
+    "file_path": "music/test_44k.wav",
+    "format": "WAV",
+    "sample_rate": 44100,
+    "bit_depth": 32,
+    "channels": 2,
+    "streaming_mode": true,
+    ...
+  }
+}
+```
+
+**优势总结：**
+
+1. **用户体验**：无需记住 `-S` 选项，管道模式自动启用
+2. **代码简化**：移除条件判断，统一流式处理路径
+3. **向后兼容**：移除的 `-S` 选项在 v3.8 中不再需要
+4. **一致性**：所有模块行为一致，stdin 模式即为流式模式
 
 ---
 

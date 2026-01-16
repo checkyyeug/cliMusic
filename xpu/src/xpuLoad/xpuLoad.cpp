@@ -103,7 +103,8 @@ std::string metadataToJSON(const protocol::AudioMetadata& metadata) {
     json << "    \"sample_count\": " << metadata.sample_count << ",\n";
     json << "    \"bitrate\": " << metadata.bitrate << ",\n";
     json << "    \"is_lossless\": " << (metadata.is_lossless ? "true" : "false") << ",\n";
-    json << "    \"is_high_res\": " << (metadata.is_high_res ? "true" : "false") << "\n";
+    json << "    \"is_high_res\": " << (metadata.is_high_res ? "true" : "false") << ",\n";
+    json << "    \"streaming_mode\": " << (metadata.streaming_mode ? "true" : "false") << "\n";
     json << "  }\n";
     json << "}\n";
     return json.str();
@@ -363,6 +364,25 @@ int main(int argc, char* argv[]) {
                 LOG_INFO("High-resolution audio detected: {} Hz", metadata.sample_rate);
             }
 
+            // Detect if we're in pipe mode (stdout is connected to another program)
+            // This is done BEFORE outputting metadata, so we can set streaming_mode flag
+            #ifdef PLATFORM_WINDOWS
+            DWORD mode;
+            bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
+            #else
+            bool is_piped = !isatty(STDOUT_FILENO);
+            #endif
+
+            // Set streaming_mode flag based on pipe detection
+            // If we're in pipe mode OR --data option is specified, we're streaming
+            metadata.streaming_mode = (is_piped || data_only);
+
+            if (metadata.streaming_mode) {
+                LOG_INFO("Streaming mode detected (pipe to another program)");
+            } else {
+                LOG_INFO("File mode (stdout is terminal)");
+            }
+
             // Step 3: Output metadata as JSON
             if (!data_only) {
                 std::cout << ::metadataToJSON(metadata);
@@ -373,12 +393,7 @@ int main(int argc, char* argv[]) {
             // Step 4: Stream PCM data ONLY if:
             // 1. --data option is specified, OR
             // 2. stdout is NOT a terminal (piped to another program)
-            #ifdef PLATFORM_WINDOWS
-            DWORD mode;
-            bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
-            #else
-            bool is_piped = !isatty(STDOUT_FILENO);
-            #endif
+            // Note: streaming_mode flag already indicates this condition
 
             if (!metadata_only && (data_only || is_piped)) {
                 // Stream PCM data using callback
@@ -446,6 +461,23 @@ int main(int argc, char* argv[]) {
             LOG_INFO("High-resolution audio detected: {} Hz", metadata.sample_rate);
         }
 
+        // Detect if we're in pipe mode
+        #ifdef PLATFORM_WINDOWS
+        DWORD mode;
+        bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
+        #else
+        bool is_piped = !isatty(STDOUT_FILENO);
+        #endif
+
+        // Set streaming_mode flag based on pipe detection
+        metadata.streaming_mode = (is_piped || data_only);
+
+        if (metadata.streaming_mode) {
+            LOG_INFO("Streaming mode detected (pipe to another program)");
+        } else {
+            LOG_INFO("File mode (stdout is terminal)");
+        }
+
         // Step 3: Output metadata as JSON
         if (!data_only) {
             std::cout << ::metadataToJSON(metadata);
@@ -456,12 +488,7 @@ int main(int argc, char* argv[]) {
         // Step 4: Stream PCM data ONLY if:
         // 1. --data option is specified, OR
         // 2. stdout is NOT a terminal (piped to another program)
-        #ifdef PLATFORM_WINDOWS
-        DWORD mode;
-        bool is_piped = !GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode);
-        #else
-        bool is_piped = !isatty(STDOUT_FILENO);
-        #endif
+        // Note: streaming_mode flag already indicates this condition
 
         if (!metadata_only && (data_only || is_piped)) {
             // Stream PCM data using callback

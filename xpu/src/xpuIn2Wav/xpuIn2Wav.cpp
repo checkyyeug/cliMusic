@@ -44,7 +44,6 @@ void printUsage(const char* program_name) {
     std::cout << "  -b, --bits <depth>      Output bit depth (16, 24, 32, default: 32)\n";
     std::cout << "  -c, --channels <num>    Output channels (default: keep original)\n";
     std::cout << "  -q, --quality <qual>    Resampling quality (best, medium, fast)\n";
-    std::cout << "  -S, --streaming         Enable streaming mode (low memory, low latency)\n";
     std::cout << "  --chunk-size <frames>   Frames per chunk in streaming mode (default: 4096)\n";
     std::cout << "  -f, --force             Bypass FFT cache\n";
     std::cout << "  --cache-dir <path>      FFT cache directory\n";
@@ -53,9 +52,9 @@ void printUsage(const char* program_name) {
     std::cout << "  Default:  Read from stdin, write to stdout (for piping)\n";
     std::cout << "  With -i: Read from file, write to stdout (unless -o specified)\n";
     std::cout << "  With -o: Write to file instead of stdout\n";
-    std::cout << "\nStreaming mode (-S):\n";
+    std::cout << "\nStreaming mode:\n";
+    std::cout << "  Automatically enabled when reading from stdin (pipeline mode)\n";
     std::cout << "  Process audio in chunks to reduce memory usage and latency\n";
-    std::cout << "  Recommended for large files and real-time playback\n";
     std::cout << "  Memory usage: ~256KB (vs ~50MB for batch mode)\n";
     std::cout << "  Latency: <100ms first byte (vs 5-10s for batch mode)\n";
     std::cout << "\nSupported formats:\n";
@@ -72,11 +71,6 @@ void printUsage(const char* program_name) {
     std::cout << "  " << program_name << " -i song.flac\n";
     std::cout << "  " << program_name << " -i song.flac -r 48000 -b 16\n";
     std::cout << "  " << program_name << " -i song.flac -o output.wav\n";
-    std::cout << "\n";
-    std::cout << "  # Streaming mode\n";
-    std::cout << "  xpuLoad song.flac | " << program_name << " -S -r 48000 | xpuPlay -\n";
-    std::cout << "  xpuLoad song.flac | " << program_name << " --streaming --chunk-size 2048 | xpuPlay -\n";
-    std::cout << "  " << program_name << " -i large.flac -S -o output.wav\n";
 }
 
 /**
@@ -122,7 +116,6 @@ int main(int argc, char* argv[]) {
     bool force = false;
     const char* cache_dir = nullptr;
     int fft_size = 2048;
-    bool streaming = false;     // Streaming mode
     int chunk_size = 4096;      // Default chunk size for streaming
 
     for (int i = 1; i < argc; ++i) {
@@ -141,8 +134,6 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Error: -i/--input requires a filename argument\n";
                 return 1;
             }
-        } else if (strcmp(argv[i], "-S") == 0 || strcmp(argv[i], "--streaming") == 0) {
-            streaming = true;
         } else if (strcmp(argv[i], "--chunk-size") == 0) {
             if (i + 1 < argc) {
                 chunk_size = std::atoi(argv[++i]);
@@ -226,26 +217,18 @@ int main(int argc, char* argv[]) {
 
     if (output_to_stdout) {
         // Pipeline mode: read from stdin, convert, output to stdout
-        if (streaming) {
-            LOG_INFO("Output mode: stdout (streaming pipeline mode)");
-            LOG_INFO("Streaming enabled: chunk_size={}, verbose={}", chunk_size, verbose);
-            ret = in2wav::FormatConverter::convertStdinToStdoutStreaming(
-                output_sample_rate,
-                output_bit_depth,
-                output_channels,
-                quality,
-                chunk_size,
-                verbose
-            );
-        } else {
-            LOG_INFO("Output mode: stdout (batch pipeline mode)");
-            ret = in2wav::FormatConverter::convertStdinToStdout(
-                output_sample_rate,
-                output_bit_depth,
-                output_channels,
-                quality
-            );
-        }
+        // Streaming mode is automatically enabled when reading from stdin
+        // The streaming_mode flag in metadata determines the behavior
+        LOG_INFO("Output mode: stdout (streaming pipeline mode)");
+        LOG_INFO("Streaming enabled: chunk_size={}, verbose={}", chunk_size, verbose);
+        ret = in2wav::FormatConverter::convertStdinToStdoutStreaming(
+            output_sample_rate,
+            output_bit_depth,
+            output_channels,
+            quality,
+            chunk_size,
+            verbose
+        );
 
         if (ret != ErrorCode::Success) {
             std::string error_msg = "Error code: " + std::to_string(static_cast<int>(ret));
