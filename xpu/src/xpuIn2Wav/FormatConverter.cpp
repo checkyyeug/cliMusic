@@ -1036,6 +1036,35 @@ ErrorCode FormatConverter::convertStdinToStdoutStreaming(int sample_rate,
     // Parse input format from JSON
     int input_sample_rate = 48000;
     int input_channels = 2;
+    bool streaming_mode = false;  // Default to false for backward compatibility
+
+    // Parse streaming_mode flag from metadata
+    size_t sm_pos = json_str.find("\"streaming_mode\":");
+    if (sm_pos != std::string::npos) {
+        size_t value_start = json_str.find(":", sm_pos) + 1;
+        size_t value_end = json_str.find(",", value_start);
+        if (value_end == std::string::npos) {
+            value_end = json_str.find("}", value_start);
+        }
+        std::string sm_str = json_str.substr(value_start, value_end - value_start);
+        // Trim whitespace
+        size_t start = sm_str.find_first_not_of(" \t\n");
+        size_t end = sm_str.find_last_not_of(" \t\n");
+        if (start != std::string::npos && end != std::string::npos) {
+            sm_str = sm_str.substr(start, end - start + 1);
+            // Check for "true" or "false"
+            streaming_mode = (sm_str == "true");
+        }
+    }
+
+    LOG_INFO("Streaming mode from metadata: {}", streaming_mode ? "true" : "false");
+
+    // If streaming_mode is false, this is likely a mistake in the pipeline
+    // We should log a warning but continue in streaming mode anyway
+    if (!streaming_mode) {
+        LOG_WARN("Metadata indicates file mode, but we're reading from stdin - forcing streaming mode");
+        streaming_mode = true;
+    }
 
     size_t sr_pos = json_str.find("\"sample_rate\":");
     if (sr_pos != std::string::npos) {
