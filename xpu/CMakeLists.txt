@@ -371,6 +371,9 @@ add_subdirectory(src/xpuQueue)
 add_subdirectory(src/xpuProcess)
 add_subdirectory(src/xpuDaemon)
 
+# Build API server (Phase 2)
+add_subdirectory(src/xpuApi)
+
 # Tests
 option(BUILD_TESTING "Build tests" ON)
 if(BUILD_TESTING)

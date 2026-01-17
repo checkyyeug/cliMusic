@@ -165,7 +165,7 @@ xpuLoad song.flac | xpuIn2Wav | xpuProcess --eq rock | xpuPlay
 xpuLoad song.flac | xpuIn2Wav | xpuProcess --volume 0.8 | xpuPlay
 
 # 格式转换并保存为文件
-xpuLoad song.flac | xpuIn2Wavr 48000 -b 16 -o output.wav
+xpuLoad song.flac | xpuIn2Wav -r 48000 -b 16 -o output.wav
 ```
 
 #### AI 集成
@@ -9772,6 +9772,521 @@ curl https://remote.host:8443/api/v3/status
 1. 移除不必要的允许目录
 2. 限制日志文件权限: chmod 600 ~/.local/log/xpu/*
 ```
+
+---
+
+## 4.5. Phase 2: SSE 流式架构设计 (方案 A)
+
+> **版本**: v4.1 - SSE 流式传输架构
+> **更新日期**: 2025-01-17
+> **状态**: 设计阶段
+
+### 4.5.1 架构概述
+
+基于 2025 年 MCP Streamable HTTP Transport 规范，采用 **Server-Sent Events (SSE)** 作为流式音频传输的核心协议。
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        客户端层                                       │
+├─────────────────────────────────────────────────────────────────────┤
+│  Web Client (Browser)  │  Mobile App  │  Claude AI (MCP Client)    │
+└─────────────────────────────────────────────────────────────────────┘
+              │                        │                     │
+              │ HTTP/JSON              │ HTTP/JSON           │ MCP (stdio)
+              ▼                        ▼                     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      xpuDaemon (统一入口)                            │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │
+│  │ REST API    │  │ MCP Server  │  │ SSE Stream  │                  │
+│  │ (HTTP/JSON) │  │ (stdio)     │  │ (音频流)     │                  │
+│  └─────────────┘  └─────────────┘  └─────────────┘                  │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CLI 模块编排层 (Pipe)                             │
+│   xpuLoad ──> xpuIn2Wav ──> xpuProcess ──> xpuPlay                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.5.2 SSE 流式传输设计
+
+#### 4.5.2.1 为什么选择 SSE？
+
+| 特性 | SSE | WebSocket | gRPC |
+|------|-----|-----------|------|
+| **协议** | HTTP/1.1 | TCP | HTTP/2 |
+| **方向** | 单向 (服务器→客户端) | 双向 | 双向 |
+| **浏览器支持** | ✅ 原生 | ✅ 原生 | ❌ 需要 gRPC-Web |
+| **实现复杂度** | 🟢 简单 | 🟡 中等 | 🔴 复杂 |
+| **调试难度** | 🟢 容易 | 🟡 中等 | 🔴 困难 |
+| **扩展性** | 🟡 中等 | 🔴 困难 | 🟢 好 |
+| **MCP 兼容性** | ✅ 官方支持 | ❌ 不支持 | ❌ 不支持 |
+| **音频流适配** | ✅ 完美匹配 | ⚠️ 过度设计 | ⚠️ 过度设计 |
+
+**SSE 核心优势：**
+1. **MCP 官方支持**：2025年3月 Streamable HTTP Transport 规范采用 SSE
+2. **单向音频流**：完美匹配服务器→客户端的音频推送场景
+3. **实现简单**："90% 的好处，10% 的麻烦"
+4. **HTTP 兼容**：复用现有 HTTP 基础设施
+5. **自动重连**：浏览器原生支持断线重连
+
+#### 4.5.2.2 SSE 流式协议
+
+**客户端请求：**
+```http
+GET /api/stream/audio HTTP/1.1
+Host: localhost:8080
+Accept: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+
+X-Session-ID: 550e8400-e29b-41d4-a716-446655440000
+X-Client-ID: web-player-v1
+```
+
+**服务器响应 (SSE 格式)：**
+```http
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+X-Accel-Buffering: no  # 禁用 nginx 缓冲
+
+: ping stream
+
+event: metadata
+data: {"format":{"sample_rate":48000,"channels":2,"bits_per_sample":32}}
+
+event: audio
+data: {"chunk_id":1,"size":16384,"timestamp":1234567890}
+
+event: audio
+data: {"binary":"base64_encoded_pcm_data_here"}
+
+event: status
+data: {"state":"playing","position":12.5,"duration":240.0,"buffer_fill":85}
+
+event: complete
+data: {"reason":"track_finished"}
+```
+
+#### 4.5.2.3 流式数据格式
+
+**音频数据块格式：**
+```json
+{
+  "event": "audio",
+  "data": {
+    "chunk_id": 123,
+    "sequence": 456,
+    "timestamp": 1705486890123,
+    "format": {
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 32
+    },
+    "payload": "<base64_encoded_pcm_float_data>",
+    "duration_ms": 341.33
+  }
+}
+```
+
+**状态更新格式：**
+```json
+{
+  "event": "status",
+  "data": {
+    "state": "playing",
+    "position": 45.2,
+    "duration": 240.5,
+    "volume": 0.8,
+    "buffer_fill": 78,
+    "bitrate": 1411200,
+    "codec": "FLAC",
+    "sample_rate": 48000
+  }
+}
+```
+
+### 4.5.3 REST API 端点设计
+
+#### 4.5.3.1 播放控制 API
+
+**开始播放 + 获取流端点：**
+```http
+POST /api/v3/play
+Content-Type: application/json
+
+{
+  "file": "~/Music/song.flac",
+  "options": {
+    "volume": 0.8,
+    "device": "default",
+    "auto_resample": true
+  }
+}
+
+响应:
+{
+  "success": true,
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "stream_url": "/api/stream/audio?session=550e8400-e29b-41d4-a716-446655440000",
+  "metadata": {
+    "title": "Song Title",
+    "artist": "Artist Name",
+    "duration": 240.5,
+    "format": {
+      "sample_rate": 48000,
+      "channels": 2,
+      "bits_per_sample": 32
+    }
+  }
+}
+```
+
+**播放控制端点：**
+```http
+# 暂停
+POST /api/v3/pause
+{"session": "session_id"}
+
+# 恢复
+POST /api/v3/resume
+{"session": "session_id"}
+
+# 停止
+POST /api/v3/stop
+{"session": "session_id"}
+
+# 跳转
+POST /api/v3/seek
+{
+  "session": "session_id",
+  "position": 60.0
+}
+
+# 音量
+POST /api/v3/volume
+{
+  "session": "session_id",
+  "volume": 0.8,
+  "fade_ms": 500
+}
+```
+
+#### 4.5.3.2 队列管理 API
+
+```http
+# 添加到队列
+POST /api/v3/queue/add
+{
+  "files": ["~/Music/song1.flac", "~/Music/song2.flac"],
+  "position": -1  # -1 = 末尾, 0 = 开头
+}
+
+# 获取队列
+GET /api/v3/queue?session=xxx
+
+# 清空队列
+DELETE /api/v3/queue?session=xxx
+
+# 下一首
+POST /api/v3/queue/next
+{"session": "session_id"}
+```
+
+### 4.5.4 MCP Server 设计
+
+#### 4.5.4.1 MCP Streamable HTTP Transport
+
+基于 MCP 2025年3月规范：
+
+```cpp
+class MCPServer {
+public:
+    // stdio 模式 (Claude Code 直接调用)
+    std::string handleRequest(const std::string& json_request);
+
+    // SSE 流式模式
+    void startSSEStream(const std::string& session_id);
+
+private:
+    // MCP Tools
+    json callTool(const std::string& name, const json& args);
+
+    // MCP Resources
+    json readResource(const std::string& uri);
+
+    // SSE 发送
+    void sendSSEEvent(const std::string& event, const json& data);
+};
+```
+
+#### 4.5.4.2 MCP Tools 定义
+
+```json
+{
+  "tools": [
+    {
+      "name": "xpu_play_stream",
+      "description": "播放音乐并返回 SSE 流端点 URL",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "音频文件路径"
+          },
+          "volume": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": ["file"]
+      }
+    },
+    {
+      "name": "xpu_pause",
+      "description": "暂停当前播放"
+    },
+    {
+      "name": "xpu_queue_add",
+      "description": "添加歌曲到队列",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "required": ["files"]
+      }
+    }
+  ]
+}
+```
+
+#### 4.5.4.3 MCP Resources 定义
+
+```json
+{
+  "resources": [
+    {
+      "uri": "xpu://queue",
+      "name": "播放队列",
+      "description": "当前播放队列状态",
+      "mime_type": "application/json"
+    },
+    {
+      "uri": "xpu://status",
+      "name": "播放状态",
+      "description": "当前播放状态信息",
+      "mime_type": "application/json"
+    },
+    {
+      "uri": "xpu://devices",
+      "name": "音频设备",
+      "description": "可用音频设备列表",
+      "mime_type": "application/json"
+    }
+  ]
+}
+```
+
+### 4.5.5 实现流程
+
+#### 4.5.5.1 播放流程
+
+```
+客户端                    xpuDaemon                   CLI Pipeline
+  │                          │                            │
+  ├─ POST /play ───────────>│                            │
+  │  {file: "song.flac"}     │                            │
+  │                          ├─ xpuLoad song.flac ──────>│
+  │                          │                            │
+  │<── {session_id,          │<── JSON metadata ─────────┤
+  │     stream_url} ─────────┤                            │
+  │                          │                            │
+  ├─ GET /stream/audio ─────>│                            │
+  │                          ├─ xpuIn2Wav ──────────────>│
+  │                          │                            │
+  │<══ SSE: metadata ════════┤<══ JSON + PCM ─═══════════┤
+  │                          │                            │
+  │<══ SSE: audio_chunk 1 ═══┤<══ PCM data ═════════════┤
+  │                          │                            │
+  │<══ SSE: audio_chunk 2 ═══┤<══ PCM data ═════════════┤
+  │                          │                            │
+  │<══ SSE: status ══════════┤<══ status update ─────────┤
+  │                          │                            │
+  │<══ SSE: complete ════════┤                            │
+```
+
+#### 4.5.5.2 控制流程
+
+```
+客户端                    xpuDaemon                   CLI Pipeline
+  │                          │                            │
+  ├─ POST /pause ──────────>│                            │
+  │                          ├─ 发送 SIGSTOP ────────────>│
+  │<── 200 OK ───────────────┤                            │
+  │                          │                            │
+  ├─ POST /seek ───────────>│                            │
+  │  {position: 60}          │                            │
+  │                          ├─ 重启动管道 + seek ──────>│
+  │<── 200 OK ───────────────┤                            │
+```
+
+### 4.5.6 数据格式规范
+
+#### 4.5.6.1 音频数据编码
+
+**Base64 编码的 PCM Float 数据：**
+```json
+{
+  "format": "pcm_float",
+  "sample_rate": 48000,
+  "channels": 2,
+  "bits_per_sample": 32,
+  "endianness": "little",
+  "payload": "AAAAAA==...",  // base64 编码的 IEEE 754 float
+  "payload_size": 16384,     // 字节数
+  "samples": 4096            // 样本数 (16384 / 4 / 2)
+}
+```
+
+#### 4.5.6.2 错误处理
+
+**SSE 错误事件：**
+```http
+event: error
+data: {
+  "code": 4001,
+  "message": "Audio file not found",
+  "details": {
+    "file": "~/Music/song.flac",
+    "suggestion": "Check file path and try again"
+  }
+}
+```
+
+### 4.5.7 性能目标
+
+| 指标 | 目标值 | 说明 |
+|------|--------|------|
+| **首字节延迟** | <100ms | 从请求到第一个 SSE 事件 |
+| **音频延迟** | <50ms | xpuPlay 目标延迟 |
+| **端到端延迟** | <200ms | 客户端到扬声器 |
+| **并发连接** | 10+ | 同时支持 10 个 SSE 流 |
+| **内存占用** | <50MB | 每个 SSE 流 |
+| **CPU 占用** | <5% | 流式传输 (不含音频处理) |
+
+### 4.5.8 安全考虑
+
+#### 4.5.8.1 认证与授权
+
+```http
+# API Key 认证 (远程访问)
+GET /api/stream/audio
+Authorization: Bearer <api_key>
+X-Session-ID: <session_id>
+
+# 本地无认证
+GET /api/stream/audio
+X-Local-Request: true
+```
+
+#### 4.5.8.2 速率限制
+
+```http
+# 速率限制头
+X-RateLimit-Limit: 1000
+X-RateLimit-Remaining: 995
+X-RateLimit-Reset: 1705486900
+```
+
+### 4.5.9 客户端实现示例
+
+#### 4.5.9.1 JavaScript/Browser 客户端
+
+```javascript
+// 1. 开始播放
+const response = await fetch('/api/v3/play', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({file: '~/Music/song.flac'})
+});
+const {stream_url, session_id} = await response.json();
+
+// 2. 连接 SSE 流
+const eventSource = new EventSource(stream_url);
+
+eventSource.addEventListener('metadata', (e) => {
+  const metadata = JSON.parse(e.data);
+  console.log('Format:', metadata.format);
+});
+
+eventSource.addEventListener('audio', (e) => {
+  const audioData = JSON.parse(e.data);
+  const pcmData = base64ToArrayBuffer(audioData.payload);
+  audioQueue.push(pcmData);
+});
+
+eventSource.addEventListener('status', (e) => {
+  const status = JSON.parse(e.data);
+  updateUI(status);
+});
+
+eventSource.addEventListener('complete', (e) => {
+  console.log('Playback complete');
+  eventSource.close();
+});
+
+// 3. 播放音频 (Web Audio API)
+const audioContext = new AudioContext({
+  sampleRate: 48000,
+  latencyHint: 'interactive'
+});
+```
+
+### 4.5.10 实现优先级
+
+**Phase 2.1: 基础 SSE 流 (MVP)**
+- ✅ REST API 端点 (play, pause, stop, seek)
+- ✅ SSE 音频流
+- ✅ 基础状态推送
+- ✅ 单会话支持
+
+**Phase 2.2: MCP Server**
+- ✅ MCP stdio 模式
+- ✅ MCP Tools (播放控制)
+- ✅ MCP Resources (队列、状态)
+- ✅ Claude Code 集成测试
+
+**Phase 2.3: 高级特性**
+- ✅ 多会话并发
+- ✅ 队列管理 API
+- ✅ 音量/淡入淡出
+- ✅ 认证授权
+
+**Phase 2.4: 可选扩展**
+- ⚪ WebSocket 双向控制 (如需更低延迟控制)
+- ⚪ gRPC 服务间通信 (如需微服务架构)
+- ⚪ DLNA/AirPlay 支持
+
+### 4.5.11 技术栈
+
+| 组件 | 技术 | 理由 |
+|------|------|------|
+| **HTTP 服务器** | cpp-httplib (Crow) | 轻量级 C++ HTTP 库 |
+| **SSE 实现** | 自定义 (基于 HTTP) | 简单，符合 MCP 规范 |
+| **JSON 解析** | nlohmann/json | 已有依赖 |
+| **进程管理** | 子进程 + 管道 | 复用现有 CLI 模块 |
+| **线程模型** | 线程池 + 事件循环 | 高并发支持 |
+
+---
 
 ## 5. MCP 接口设计
 
