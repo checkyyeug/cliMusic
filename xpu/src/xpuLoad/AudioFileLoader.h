@@ -40,6 +40,15 @@ public:
     void setTargetSampleRate(int sample_rate);
 
     /**
+     * @brief Set DSD decimation factor for output
+     * @param factor Decimation factor: 16, 32, or 64 (default: 16)
+     *               Higher factors = lower quality but less CPU/memory
+     *               For DSD64: /16 = 176.4kHz, /32 = 88.2kHz, /64 = 44.1kHz
+     * @note Only affects DSD files when target_sample_rate is 0
+     */
+    void setDSDDecimation(int factor);
+
+    /**
      * @brief Load audio file (batch mode - loads entire file into memory)
      */
     ErrorCode load(const std::string& filepath);

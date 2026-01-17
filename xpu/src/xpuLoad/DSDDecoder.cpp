@@ -98,6 +98,7 @@ public:
     std::vector<uint8_t> dsd_data;
     bool loaded = false;
     int target_sample_rate = 48000;  // Default target sample rate
+    int dsd_decimation = 16;  // Default DSD decimation factor (16, 32, or 64)
 
     uint32_t dsd_rate = 0;       // DSD sample rate (e.g., 2822400 for DSD64)
     uint32_t channels = 0;
@@ -119,6 +120,15 @@ DSDDecoder::~DSDDecoder() = default;
 void DSDDecoder::setTargetSampleRate(int sample_rate) {
     impl_->target_sample_rate = sample_rate;
     LOG_INFO("Target sample rate set to: {}", sample_rate);
+}
+
+void DSDDecoder::setDSDDecimation(int factor) {
+    if (factor != 16 && factor != 32 && factor != 64) {
+        LOG_ERROR("Invalid DSD decimation factor: {}, must be 16, 32, or 64", factor);
+        return;
+    }
+    impl_->dsd_decimation = factor;
+    LOG_INFO("DSD decimation factor set to: {}", factor);
 }
 
 DSDFormat DSDDecoder::detectFormat(const std::string& filepath) {
@@ -569,16 +579,16 @@ ErrorCode DSDDecoder::prepareStreaming(const std::string& filepath) {
         impl_->dsd_sample_count = fmt.sample_count;
         impl_->block_size = fmt.block_size;
 
-        // Use DSD64 (2.8224 MHz) as intermediate rate for all DSD formats
-        // This allows clean integer decimation from any DSD rate (DSD128, DSD256, DSD512, etc.)
-        // For DSD512: 22579200 / 2822400 = 8 (integer - perfect!)
-        // For DSD256: 11289600 / 2822400 = 4 (integer - perfect!)
-        // For DSD128: 5644800 / 2822400 = 2 (integer - perfect!)
-        // For DSD64:  2822400 / 2822400 = 1 (no decimation needed!)
-        const uint32_t dsd64_rate = 2822400;  // 64 × 44.1 kHz
-        const uint32_t intermediate_sample_rate = dsd64_rate;
+        // Use configurable decimation factor for DSD conversion
+        // Default: /16 (high quality), /32 (if target > 352kHz), /64 (lower quality)
+        // For DSD64 with /16: 2822400 / 16 = 176400 Hz
+        // For DSD64 with /32: 2822400 / 32 = 88200 Hz
+        // For DSD64 with /64: 2822400 / 64 = 44100 Hz
+        const uint32_t intermediate_sample_rate = impl_->dsd_rate / impl_->dsd_decimation;
 
-        LOG_INFO("Using intermediate sample rate: {} Hz (DSD64)", intermediate_sample_rate);
+        LOG_INFO("Using DSD decimation factor: {}", impl_->dsd_decimation);
+        LOG_INFO("Intermediate sample rate: {} Hz (DSD rate {} / {})",
+                 intermediate_sample_rate, impl_->dsd_rate, impl_->dsd_decimation);
 
         impl_->metadata.file_path = filepath;
         impl_->metadata.channels = fmt.channel_num;
@@ -693,12 +703,12 @@ ErrorCode DSDDecoder::prepareStreaming(const std::string& filepath) {
                 impl_->dsd_rate = prop.sample_rate;
                 impl_->dsd_sample_count = prop.sample_count;
 
-                // Use DSD64 (2.8224 MHz) as intermediate rate for all DSD formats
-                // This allows clean integer decimation from any DSD rate (DSD128, DSD256, DSD512, etc.)
-                const uint32_t dsd64_rate = 2822400;  // 64 × 44.1 kHz
-                const uint32_t intermediate_sample_rate = dsd64_rate;
+                // Use configurable decimation factor for DSD conversion
+                const uint32_t intermediate_sample_rate = impl_->dsd_rate / impl_->dsd_decimation;
 
-                LOG_INFO("Using intermediate sample rate: {} Hz (DSD64)", intermediate_sample_rate);
+                LOG_INFO("Using DSD decimation factor: {}", impl_->dsd_decimation);
+                LOG_INFO("Intermediate sample rate: {} Hz (DSD rate {} / {})",
+                         intermediate_sample_rate, impl_->dsd_rate, impl_->dsd_decimation);
 
                 impl_->metadata.file_path = filepath;
                 impl_->metadata.channels = prop.channels;
@@ -800,16 +810,14 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
     // DSD decoding parameters
     const uint32_t target_channels = 2;
 
-    // For DSD512 (22.5792 MHz), we need to decimate in stages to maintain quality
-    // Stage 1: DSD512 → DSD64 (2.8224 MHz) - 8x decimation
-    // Stage 2: DSD64 → Target rate (handled by xpuIn2Wav)
-    // We output at DSD64 rate and let xpuIn2Wav handle the final resampling
+    // Use configurable decimation factor for DSD conversion
+    // The decimation factor determines how much we reduce the DSD sample rate
+    // Default: /16 (high quality), /32 (if target > 352kHz), /64 (lower quality)
+    const uint32_t intermediate_sample_rate = impl_->dsd_rate / impl_->dsd_decimation;
 
-    // Use DSD64 (2.8224 MHz) as intermediate rate for all DSD formats
-    const uint32_t dsd64_rate = 2822400;  // 64 × 44.1 kHz
-    const uint32_t intermediate_sample_rate = dsd64_rate;
-
-    LOG_INFO("Using intermediate sample rate: {} Hz (DSD64)", intermediate_sample_rate);
+    LOG_INFO("Using DSD decimation factor: {}", impl_->dsd_decimation);
+    LOG_INFO("Intermediate sample rate: {} Hz (DSD rate {} / {})",
+             intermediate_sample_rate, impl_->dsd_rate, impl_->dsd_decimation);
 
     // Division by zero protection for intermediate_sample_rate
     if (intermediate_sample_rate == 0) {
@@ -822,12 +830,13 @@ ErrorCode DSDDecoder::streamPCM(DSDStreamingCallback callback, size_t chunk_size
         return ErrorCode::InvalidArgument;
     }
 
-    const uint32_t decimation_factor = impl_->dsd_rate / intermediate_sample_rate;
+    // Calculate actual decimation factor based on DSD rate and intermediate rate
+    const uint32_t decimation_factor = impl_->dsd_decimation;
 
     // Validate decimation factor
     if (decimation_factor == 0) {
-        LOG_ERROR("Invalid decimation factor: 0 (dsd_rate={}, intermediate_sample_rate={})",
-                  impl_->dsd_rate, intermediate_sample_rate);
+        LOG_ERROR("Invalid decimation factor: 0 (dsd_decimation={})",
+                  impl_->dsd_decimation);
         return ErrorCode::InvalidArgument;
     }
 

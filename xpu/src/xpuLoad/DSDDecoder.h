@@ -51,6 +51,14 @@ public:
     void setTargetSampleRate(int sample_rate);
 
     /**
+     * @brief Set DSD decimation factor for output
+     * @param factor Decimation factor: 16, 32, or 64 (default: 16)
+     *               Higher factors = lower quality but less CPU/memory
+     *               For DSD64: /16 = 176.4kHz, /32 = 88.2kHz, /64 = 44.1kHz
+     */
+    void setDSDDecimation(int factor);
+
+    /**
      * @brief Load DSD file (batch mode - loads entire file into memory)
      * @param filepath Path to DSD file (.dsf or .dff)
      * @return ErrorCode::Success on success

@@ -159,6 +159,7 @@ public:
     std::vector<uint8_t> pcm_data;
     bool loaded = false;
     int target_sample_rate = 48000;  // Default target sample rate
+    int dsd_decimation = 16;  // Default DSD decimation factor (16, 32, or 64)
     int audio_stream_index = -1;     // Audio stream index in the file
 
     // FFmpeg contexts
@@ -186,6 +187,15 @@ AudioFileLoader::~AudioFileLoader() {
 void AudioFileLoader::setTargetSampleRate(int sample_rate) {
     impl_->target_sample_rate = sample_rate;
     LOG_INFO("Target sample rate set to: {}", sample_rate);
+}
+
+void AudioFileLoader::setDSDDecimation(int factor) {
+    if (factor != 16 && factor != 32 && factor != 64) {
+        LOG_ERROR("Invalid DSD decimation factor: {}, must be 16, 32, or 64", factor);
+        return;
+    }
+    impl_->dsd_decimation = factor;
+    LOG_INFO("DSD decimation factor set to: {}", factor);
 }
 
 ErrorCode AudioFileLoader::load(const std::string& filepath) {
@@ -294,13 +304,13 @@ ErrorCode AudioFileLoader::load(const std::string& filepath) {
 
     // Setup resampler to convert to standard format
     // Target: target_sample_rate Hz, stereo, 32-bit float planar
-    // For DSD: if target_sample_rate is 0, use DSD rate / 32
+    // For DSD: if target_sample_rate is 0, use DSD rate / dsd_decimation
     // For non-DSD: if target_sample_rate is 0, keep the original sample rate
     int actual_target_rate;
 
     if (format_enum == audio::AudioFormat::DSD && impl_->target_sample_rate == 0) {
-        // DSD with no target specified: use DSD rate / 32
-        actual_target_rate = impl_->codec_ctx->sample_rate / 32;
+        // DSD with no target specified: use DSD rate / dsd_decimation
+        actual_target_rate = impl_->codec_ctx->sample_rate / impl_->dsd_decimation;
     } else if (impl_->target_sample_rate > 0) {
         actual_target_rate = impl_->target_sample_rate;
     } else {
@@ -582,15 +592,15 @@ ErrorCode AudioFileLoader::prepareStreaming(const std::string& filepath) {
     impl_->metadata.original_bit_depth = source_bit_depth;
 
     // Calculate output sample rate and bit depth
-    // For DSD: PCM rate = DSD rate / 32, output is 32-bit float
+    // For DSD: PCM rate = DSD rate / dsd_decimation, output is 32-bit float
     // For non-DSD: use target_sample_rate if specified, otherwise keep original
     int output_sample_rate;
     if (format_enum == audio::AudioFormat::DSD) {
-        // DSD: PCM sample rate = DSD rate / 32 (e.g., DSD64: 2822400/32 = 88200 Hz)
+        // DSD: PCM sample rate = DSD rate / dsd_decimation (e.g., DSD64: 2822400/16 = 176400 Hz)
         if (impl_->target_sample_rate > 0) {
             output_sample_rate = impl_->target_sample_rate;
         } else {
-            output_sample_rate = original_sample_rate / 32;  // Default: DSD/32
+            output_sample_rate = original_sample_rate / impl_->dsd_decimation;  // Default: DSD/16
         }
         impl_->metadata.bit_depth = 32;  // Output is always 32-bit float
     } else {
@@ -706,14 +716,14 @@ ErrorCode AudioFileLoader::streamPCM(StreamingCallback callback, size_t chunk_si
     }
 
     // Setup resampler
-    // For DSD: if target_sample_rate is 0, use DSD rate / 32
+    // For DSD: if target_sample_rate is 0, use DSD rate / dsd_decimation
     // For non-DSD: if target_sample_rate is 0, use original rate
     int actual_target_rate;
     audio::AudioFormat format_enum = audio::AudioFormatUtils::formatFromExtension(impl_->metadata.file_path);
 
     if (format_enum == audio::AudioFormat::DSD && impl_->target_sample_rate == 0) {
-        // DSD with no target specified: use DSD rate / 32
-        actual_target_rate = impl_->codec_ctx->sample_rate / 32;
+        // DSD with no target specified: use DSD rate / dsd_decimation
+        actual_target_rate = impl_->codec_ctx->sample_rate / impl_->dsd_decimation;
     } else if (impl_->target_sample_rate > 0) {
         actual_target_rate = impl_->target_sample_rate;
     } else {

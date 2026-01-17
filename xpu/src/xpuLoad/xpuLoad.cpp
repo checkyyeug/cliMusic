@@ -45,6 +45,8 @@ void printUsage(const char* program_name) {
     std::cout << "  -m, --metadata          Output only metadata (JSON format)\n";
     std::cout << "  -d, --data              Output only PCM data (binary)\n";
     std::cout << "  -r <rate>, --sample-rate <rate>  Target sample rate (default: keep original)\n";
+    std::cout << "  --dsd-decimation <factor> DSD decimation factor: 16, 32, or 64 (default: 16)\n";
+    std::cout << "                          Auto: uses /32 if target PCM rate > 352kHz\n";
     std::cout << "  --dsd-decoder <type>    DSD decoder: ffmpeg or sacd (default: ffmpeg)\n";
     std::cout << "\nSupported formats:\n";
     std::cout << "  Lossless: FLAC, WAV, ALAC, DSD (DSF/DSDIFF)\n";
@@ -60,11 +62,16 @@ void printUsage(const char* program_name) {
     std::cout << "  For DSD: PCM sample rate = DSD rate / 32 (e.g., DSD64 -> 88.2kHz)\n";
     std::cout << "  Output: [JSON metadata][8-byte size header][PCM data]\n";
     std::cout << "  PCM data: 32-bit float, interleaved, stereo\n";
+    std::cout << "\nDSD Decimation:\n";
+    std::cout << "  --dsd-decimation 16: DSD/16 (default, high quality)\n";
+    std::cout << "  --dsd-decimation 32: DSD/32 (if target > 352kHz)\n";
+    std::cout << "  --dsd-decimation 64: DSD/64 (lower quality, smaller files)\n";
     std::cout << "\nExamples:\n";
     std::cout << "  " << program_name << " song.flac\n";
     std::cout << "  " << program_name << " -r 48000 song.flac\n";
     std::cout << "  " << program_name << " --metadata song.dsf\n";
     std::cout << "  " << program_name << " --dsd-decoder sacd song.dsf\n";
+    std::cout << "  " << program_name << " --dsd-decimation 32 song.dsf\n";
     std::cout << "  " << program_name << " song.flac | xpuIn2Wav -\n";
     std::cout << "  " << program_name << " song.flac | xpuIn2Wav - -r 48000 -b 16\n";
 }
@@ -154,6 +161,7 @@ int main(int argc, char* argv[]) {
     bool metadata_only = false;
     bool data_only = false;
     int target_sample_rate = 0;  // 0 = keep original, no conversion
+    int dsd_decimation = 16;  // Default DSD decimation factor: 16, 32, or 64
     std::string dsd_decoder = "ffmpeg";  // Default DSD decoder
 
     for (int i = 1; i < argc; ++i) {
@@ -175,6 +183,19 @@ int main(int argc, char* argv[]) {
                 target_sample_rate = atoi(argv[++i]);
             } else {
                 std::cerr << "Error: -r requires a sample rate argument\n";
+                printUsage(argv[0]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--dsd-decimation") == 0) {
+            if (i + 1 < argc) {
+                dsd_decimation = atoi(argv[++i]);
+                if (dsd_decimation != 16 && dsd_decimation != 32 && dsd_decimation != 64) {
+                    std::cerr << "Error: --dsd-decimation must be 16, 32, or 64\n";
+                    printUsage(argv[0]);
+                    return 1;
+                }
+            } else {
+                std::cerr << "Error: --dsd-decimation requires a factor argument\n";
                 printUsage(argv[0]);
                 return 1;
             }
@@ -231,6 +252,14 @@ int main(int argc, char* argv[]) {
     LOG_INFO("Loading file: {}", input_file);
     LOG_INFO("Target sample rate: {}", target_sample_rate);
     LOG_INFO("DSD decoder: {}", dsd_decoder);
+
+    // Auto-downgrade logic: if target PCM rate > 352kHz, use /32 decimation
+    // This prevents excessive memory usage and processing for ultra-high sample rates
+    if (target_sample_rate > 352000 && dsd_decimation == 16) {
+        LOG_INFO("Auto-downgrade: target rate {} Hz > 352kHz, using /32 decimation", target_sample_rate);
+        dsd_decimation = 32;
+    }
+    LOG_INFO("DSD decimation factor: {}", dsd_decimation);
 
     // Detect format from extension
     std::string file_path(input_file);
@@ -334,15 +363,13 @@ int main(int argc, char* argv[]) {
             LOG_INFO("Using FFmpeg decoder (streaming mode - supports DSD via dsd2pcm)");
             load::AudioFileLoader loader;
 
-            // For DSD files, set intermediate sample rate = DSD rate / 32
-            // For non-DSD files, use the target sample rate directly
-            if (is_dsd && target_sample_rate == 0) {
-                // For DSD with no target specified, use DSD64 rate / 32 = 88200 Hz as default
-                // This allows clean integer decimation while maintaining quality
-                loader.setTargetSampleRate(88200);
-                LOG_INFO("DSD file detected: using intermediate rate 88200 Hz (DSD64/32)");
-            } else {
-                loader.setTargetSampleRate(target_sample_rate);
+            // Set target sample rate (0 = keep original or use DSD decimation)
+            loader.setTargetSampleRate(target_sample_rate);
+
+            // For DSD files, set decimation factor
+            if (is_dsd) {
+                loader.setDSDDecimation(dsd_decimation);
+                LOG_INFO("DSD file detected: using decimation factor {}", dsd_decimation);
             }
 
             // Step 1: Prepare streaming (opens file and extracts metadata)
