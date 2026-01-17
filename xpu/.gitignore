@@ -34,16 +34,6 @@ Makefile
 *.la
 *.lo
 
-# Executables
-*.exe
-*.out
-*.app
-*xpuLoad
-*xpuIn2Wav
-*xpuPlay
-*xpuQueue
-*xpuProcess
-*xpuDaemon
 
 # IDE specific files
 .vscode/
@@ -88,3 +78,5 @@ env/
 # Temporary files
 tmp/
 temp/
+/bin/
+/lib/
