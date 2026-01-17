@@ -59,7 +59,7 @@ void printUsage(const char* program_name) {
     std::cout << "\nOptions:\n";
     std::cout << "  -h, --help              Show this help message\n";
     std::cout << "  -v, --version           Show version information\n";
-    std::cout << "  -d, --device <name>     Audio device to use\n";
+    std::cout << "  -d, --device <id>       Audio device ID to use\n";
     std::cout << "  -b, --buffer-size <sz>  Buffer size in samples (256-16384)\n";
     std::cout << "  -t, --latency-test      Run latency test\n";
     std::cout << "  -l, --list-devices      List available devices\n";
@@ -83,10 +83,11 @@ void printUsage(const char* program_name) {
     std::cout << "  Quality options affect CPU usage and audio quality.\n";
     std::cout << "\nExamples:\n";
     std::cout << "  " << program_name << "\n";
+    std::cout << "  " << program_name << " -l                    # List available devices\n";
+    std::cout << "  " << program_name << " -d \"{device-id}\"     # Use specific device by ID\n";
     std::cout << "  xpuLoad song.flac | " << program_name << "    # Play loaded audio\n";
     std::cout << "  xpuLoad song.flac | xpuIn2Wav | " << program_name << "\n";
-    std::cout << "  " << program_name << " -b 1024                 # Low latency mode\n";
-    std::cout << "  " << program_name << " -d \"Device Name\"       # Use specific device\n";
+    std::cout << "  " << program_name << " -b 1024                # Low latency mode\n";
     std::cout << "  xpuLoad 44100.flac | " << program_name << " -a # Auto-resample to device rate\n";
     std::cout << "  xpuLoad song.flac | " << program_name << " -a -q sinc_medium\n";
     std::cout << "  xpuLoad song.flac | " << program_name << " -e # Exclusive mode (lowest latency)\n";
@@ -244,7 +245,7 @@ int main(int argc, char* argv[]) {
     LOG_INFO("xpuPlay starting");
 
     // Parse command-line arguments (second pass for all options)
-    const char* device_name = nullptr;
+    const char* device_id = nullptr;
     int buffer_size = 2048;
     bool latency_test = false;
     bool list_devices = false;
@@ -264,7 +265,7 @@ int main(int argc, char* argv[]) {
             continue;
         } else if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--device") == 0) {
             if (i + 1 < argc) {
-                device_name = argv[++i];
+                device_id = argv[++i];
             }
         } else if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--buffer-size") == 0) {
             if (i + 1 < argc) {
@@ -333,25 +334,26 @@ int main(int argc, char* argv[]) {
     LOG_INFO("Target latency: <50ms");
 
     // Select device if specified
-    if (device_name) {
+    if (device_id) {
         auto devices = backend->getDevices();
         bool device_found = false;
 
         for (const auto& dev : devices) {
-            if (dev.id == device_name || dev.name == device_name) {
+            if (dev.id == device_id) {
                 ret = backend->setDevice(dev);
                 if (ret != ErrorCode::Success) {
-                    std::cerr << "Error: Failed to set device: " << device_name << "\n";
+                    std::cerr << "Error: Failed to set device: " << device_id << "\n";
                     return 1;
                 }
                 device_found = true;
-                LOG_INFO("Selected device: {}", dev.name);
+                LOG_INFO("Selected device: {} ({})", dev.name, dev.id);
                 break;
             }
         }
 
         if (!device_found) {
-            std::cerr << "Error: Device not found: " << device_name << "\n";
+            std::cerr << "Error: Device ID not found: " << device_id << "\n";
+            std::cerr << "Use '" << argv[0] << " -l' to list available devices\n";
             return 1;
         }
     } else {

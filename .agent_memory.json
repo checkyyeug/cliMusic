@@ -8,5 +8,10 @@
     "timestamp": "2026-01-16T23:56:33.329630",
     "category": "technical_analysis",
     "content": "基于对源代码的深入分析，XPU项目对DSD512和DSD1024的支持情况如下：\n\n**DSDDecoder.cpp分析**：\n- 第195行：`impl_->dsd_rate = fmt.sampling_freq;` - 直接读取文件头中的采样率\n- 第426行：`const uint32_t decimation_factor = impl_->dsd_rate / target_sample_rate;` - 数学计算无限制\n- 无硬编码的DSD格式限制，支持任何符合DSF规范的采样率\n\n**AudioFileLoader.cpp分析**：\n- 第301行：DSD格式处理使用 `impl_->codec_ctx->sample_rate / 32`\n- 使用FFmpeg的通用解码框架，无特定DSD速率限制\n\n**结论**：\n1. XPU代码本身支持DSD512 (22.5792MHz) 和DSD1024 (45.1584MHz)\n2. 限制主要来自FFmpeg的DSD解码器实现\n3. 实际支持取决于FFmpeg编译时的配置和硬件性能"
+  },
+  {
+    "timestamp": "2026-01-17T10:42:19.564243",
+    "category": "api_design_analysis",
+    "content": "基于对XPU项目的分析，管道模式exe封装成API的技术方案：\n\n**当前架构**：\n- xpuLoad/xpuIn2Wav为独立exe，通过stdin/stdout管道通信\n- 数据格式：[JSON metadata][8-byte size header][PCM data chunks]\n- Stream mode已实现，支持实时处理\n\n**API封装可行性**：\n✅ **完全可行** - 4层架构设计已规划REST API层\n✅ **Stream mode支持** - 现有流式处理可直接映射到WebSocket/HTTP chunked\n\n**技术方案**：\n1. REST API包装现有exe (Phase 2规划)\n2. WebSocket支持stream mode\n3. HTTP chunked transfer编码PCM数据"
   }
 ]

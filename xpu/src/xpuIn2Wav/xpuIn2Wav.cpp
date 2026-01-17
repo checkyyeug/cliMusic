@@ -64,8 +64,8 @@ void printUsage(const char* program_name) {
     std::cout << "  Cached run: <3s (10-100x speedup)\n";
     std::cout << "\nExamples:\n";
     std::cout << "  # Pipeline mode (stdin/stdout) - DEFAULT\n";
-    std::cout << "  xpuLoad song.flac | " << program_name << " | xpuPlay -\n";
-    std::cout << "  xpuLoad song.flac | " << program_name << " -r 48000 | xpuPlay -\n";
+    std::cout << "  xpuLoad song.flac | " << program_name << " | xpuPlay\n";
+    std::cout << "  xpuLoad song.flac | " << program_name << " -r 48000 | xpuPlay\n";
     std::cout << "\n";
     std::cout << "  # File input mode\n";
     std::cout << "  " << program_name << " -i song.flac\n";
