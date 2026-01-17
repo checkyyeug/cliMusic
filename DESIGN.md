@@ -10807,6 +10807,916 @@ private:
 }
 ```
 
+---
+
+## 5.5. xpuApi - REST API Server 实现
+
+> **状态**: ✅ 已实现 (Phase 2)
+> **模块**: `xpu/src/xpuApi/`
+> **版本**: v4.1.0
+
+### 5.5.2 模块概述
+
+xpuApi 是 XPU 的 REST API 服务器，提供 HTTP 接口用于控制音频播放，并支持 SSE (Server-Sent Events) 流式传输。
+
+**核心特性：**
+- RESTful API 设计
+- SSE 流式音频传输
+- 多会话并发支持
+- CORS 支持（Web 客户端）
+- JSON-RPC 风格的请求/响应
+- **Windows 原生管道支持** (v4.1.0)
+- **优雅退出机制** - 退出时自动停止所有播放 (v4.1.0)
+- **Active Session 别名** - 使用 "active" 简化控制 (v4.1.0)
+
+### 5.5.3 平台支持
+
+| 平台 | 管道实现 | 进程管理 | 状态 |
+|------|----------|----------|------|
+| Linux | `pipe()` + `fork()`/exec()` | `kill(SIGTERM/SIGSTOP/SIGCONT)` | ✅ 完整支持 |
+| macOS | `pipe()` + `fork()`/exec()` | `kill(SIGTERM/SIGSTOP/SIGCONT)` | ✅ 完整支持 |
+| Windows | `CreatePipe()` + `CreateProcess()` | `TerminateProcess()` | ✅ 完整支持 |
+
+
+### 5.5.4 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      xpuApi (HTTP Server)                    │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐   │
+│  │ REST Handler │  │ SSE Streamer │  │Session Manager │   │
+│  │  (cpp-httplib)│  │  (chunked)   │  │  (UUID map)   │   │
+│  └──────────────┘  └──────────────┘  └────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   CLI Pipeline (fork/exec)                   │
+│   xpuLoad → xpuIn2Wav → xpuProcess → xpuPlay               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 5.5.5 文件结构
+
+```
+xpu/src/xpuApi/
+├── APIServer.h          # 服务器头文件
+├── APIServer.cpp        # 服务器实现
+├── xpuApi.cpp           # 主入口
+├── CMakeLists.txt       # 构建配置
+├── README.md            # 使用文档
+└── third_party/         # 第三方依赖
+    └── cpp-httplib/     # HTTP 服务器库
+```
+
+### 5.5.6 核心类
+
+#### APIServer 类
+
+```cpp
+namespace xpu::api {
+
+// 会话状态
+struct SessionState {
+    std::string session_id;
+    std::string file_path;
+    bool is_playing;
+    bool is_paused;
+    double position;
+    double duration;
+    float volume;
+    std::string state;  // "idle", "playing", "paused", "stopped"
+};
+
+// 管道进程管理
+struct PipelineProcess {
+    pid_t pid_load;       // xpuLoad 进程
+    pid_t pid_in2wav;     // xpuIn2Wav 进程
+    pid_t pid_process;    // xpuProcess 进程 (DSP)
+    pid_t pid_play;       // xpuPlay 进程
+
+    // DSP 参数
+    float volume;
+    bool eq_enabled;
+    float eq_bass, eq_mid, eq_treble;
+};
+
+class APIServer {
+public:
+    APIServer(const std::string& host = "localhost", int port = 8080);
+    ~APIServer();
+    bool start();
+    void stop();
+    bool isRunning() const;
+    void waitForCompletion();
+
+private:
+    // 请求处理器
+    void handlePlay(const json& request, json& response);
+    void handlePause(const json& request, json& response);
+    void handleResume(const json& request, json& response);
+    void handleStop(const json& request, json& response);
+    void handleSeek(const json& request, json& response);
+    void handleVolume(const json& request, json& response);
+    void handleGetStatus(const json& request, json& response);
+    void handleQueueAdd(const json& request, json& response);
+    void handleQueueList(const json& request, json& response);
+    void handleQueueClear(const json& request, json& response);
+    void handleQueueNext(const json& request, json& response);
+    void handleListDevices(const json& request, json& response);
+
+    // 管道编排
+    bool startPipeline(const std::string& file_path, const std::string& session_id);
+    void stopPipeline(const std::string& session_id);
+    void pausePipeline(const std::string& session_id);
+    void resumePipeline(const std::string& session_id);
+
+    // 会话管理
+    std::string createSession();
+    SessionState* getSession(const std::string& session_id);
+    void removeSession(const std::string& session_id);
+
+    // 工具函数
+    std::string generateUUID();
+    json createErrorResponse(int code, const std::string& message);
+    json createSuccessResponse(const json& data = json{});
+
+private:
+    std::string host_;
+    int port_;
+    std::atomic<bool> running_;
+    std::thread server_thread_;
+    std::unique_ptr<httplib::Server> http_server_;
+
+    // 会话管理
+    std::unordered_map<std::string, std::unique_ptr<SessionState>> sessions_;
+    std::mutex sessions_mutex_;
+
+    // 管道进程管理
+    std::unordered_map<std::string, std::unique_ptr<PipelineProcess>> pipelines_;
+    std::mutex pipelines_mutex_;
+};
+
+}
+```
+
+### 5.5.7 API 端点实现
+
+#### 播放控制 API
+
+| 端点 | 方法 | 功能 | 实现状态 |
+|------|------|------|----------|
+| `/api/v3/play` | POST | 开始播放 | ✅ |
+| `/api/v3/pause` | POST | 暂停 | ✅ |
+| `/api/v3/resume` | POST | 恢复 | ✅ |
+| `/api/v3/stop` | POST | 停止 | ✅ |
+| `/api/v3/seek` | POST | 跳转 | ✅ |
+| `/api/v3/volume` | POST | 音量 | ✅ |
+| `/api/v3/status` | GET | 状态 | ✅ |
+
+#### 队列管理 API
+
+| 端点 | 方法 | 功能 | 实现状态 |
+|------|------|------|----------|
+| `/api/v3/queue/add` | POST | 添加到队列 | 🔄 |
+| `/api/v3/queue` | GET | 获取队列 | 🔄 |
+| `/api/v3/queue` | DELETE | 清空队列 | 🔄 |
+| `/api/v3/queue/next` | POST | 下一首 | 🔄 |
+
+#### 设备管理 API
+
+| 端点 | 方法 | 功能 | 实现状态 |
+|------|------|------|----------|
+| `/api/v3/devices` | GET | 列出设备 | 🔄 |
+
+#### SSE 流式传输
+
+| 端点 | 功能 | 实现状态 |
+|------|------|----------|
+| `/api/stream/audio` | 实时状态/音频流 | ✅ |
+
+### 5.5.8 SSE 流式实现
+
+**使用 cpp-httplib 的 chunked content provider：**
+
+```cpp
+res.set_chunked_content_provider(
+    "text/event-stream",
+    [this, session_id](size_t offset, httplib::DataSink& sink) -> bool {
+        SessionState* session = getSession(session_id);
+        if (!session) return false;
+
+        json status;
+        status["state"] = session->state;
+        status["position"] = session->position;
+        status["volume"] = session->volume;
+
+        std::string event = "event: status\ndata: " + status.dump() + "\n\n";
+        return sink.write(event.c_str(), event.size());
+    }
+);
+```
+
+**SSE 事件格式：**
+
+```
+event: status
+data: {"state":"playing","position":45.2,"volume":0.8}
+
+event: complete
+data: {"reason":"track_finished"}
+
+event: error
+data: {"code":4001,"message":"Audio file not found"}
+```
+
+### 5.5.9 会话管理
+
+**会话状态结构：**
+
+```cpp
+struct SessionState {
+    std::string session_id;      // UUID v4
+    std::string file_path;
+    bool is_playing;
+    bool is_paused;
+    double position;             // 秒
+    double duration;
+    float volume;
+    std::string state;           // "idle", "playing", "paused", "stopped"
+};
+```
+
+**会话生命周期：**
+
+1. 创建：`POST /api/v3/play` → 生成新 session_id
+2. 使用：所有控制操作都需要 session_id
+3. 清理：`POST /api/v3/stop` 或连接断开时自动清理
+
+### 5.5.10 管道编排
+
+xpuApi 通过进程管理来编排完整的播放管道，包含 **xpuProcess** 用于 DSP 处理。
+
+#### 完整播放管道
+
+```
+┌─────────┐    ┌──────────┐    ┌────────────┐    ┌─────────┐
+│ xpuLoad │───▶│ xpuIn2Wav│───▶│ xpuProcess │───▶│ xpuPlay │
+│ (解析)  │    │  (转换)  │    │   (DSP)    │    │  (播放) │
+└─────────┘    └──────────┘    └────────────┘    └─────────┘
+                   │                │                │
+              pipe[0]          pipe[1]          pipe[2]
+```
+
+#### PipelineProcess 结构
+
+```cpp
+struct PipelineProcess {
+    pid_t pid_load;       // xpuLoad 进程 PID
+    pid_t pid_in2wav;     // xpuIn2Wav 进程 PID
+    pid_t pid_process;    // xpuProcess 进程 PID (DSP)
+    pid_t pid_play;       // xpuPlay 进程 PID
+
+    // DSP 参数
+    float volume;         // 音量 (0.0 - 2.0)
+    bool eq_enabled;      // 均衡器启用
+    float eq_bass;        // 低音增益
+    float eq_mid;         // 中音增益
+    float eq_treble;      // 高音增益
+};
+```
+
+#### startPipeline 实现
+
+```cpp
+bool APIServer::startPipeline(const std::string& file_path,
+                              const std::string& session_id) {
+    // 获取会话参数（音量等）
+    SessionState* session = getSession(session_id);
+
+#ifdef _WIN32
+    // Windows: CreateProcess
+    // TODO: 实现 Windows 进程创建
+    // 已实现 v4.1.0: 使用 CreatePipe + CreateProcess
+    // 1. 创建匿名管道连接各进程
+    // 2. 反向创建进程（从后往前）
+    // 3. 使用 SetHandleInformation 控制句柄继承
+    // 4. 音量参数转换：0.0-2.0 → 0-200 (百分比)
+
+    SECURITY_ATTRIBUTES sa = {0};
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+    // ... 完整实现见 APIServer.cpp
+#else
+    // Unix/Linux: fork + exec
+
+    // 创建三个管道
+    int pipe_load_in2wav[2];   // xpuLoad → xpuIn2Wav
+    int pipe_in2wav_proc[2];   // xpuIn2Wav → xpuProcess
+    int pipe_proc_play[2];     // xpuProcess → xpuPlay
+
+    pipe(pipe_load_in2wav);
+    pipe(pipe_in2wav_proc);
+    pipe(pipe_proc_play);
+
+    // Fork xpuIn2Wav
+    pid_t pid_in2wav = fork();
+    if (pid_in2wav == 0) {
+        dup2(pipe_load_in2wav[0], STDIN_FILENO);
+        dup2(pipe_in2wav_proc[1], STDOUT_FILENO);
+        execlp("xpuIn2Wav", "xpuIn2Wav", nullptr);
+    }
+
+    // Fork xpuProcess (带音量参数)
+    pid_t pid_process = fork();
+    if (pid_process == 0) {
+        dup2(pipe_in2wav_proc[0], STDIN_FILENO);
+        dup2(pipe_proc_play[1], STDOUT_FILENO);
+        std::string volume_arg = "--volume=" + std::to_string(session->volume);
+        execlp("xpuProcess", "xpuProcess", volume_arg.c_str(), nullptr);
+    }
+
+    // Fork xpuPlay
+    pid_t pid_play = fork();
+    if (pid_play == 0) {
+        dup2(pipe_proc_play[0], STDIN_FILENO);
+        execlp("xpuPlay", "xpuPlay", nullptr);
+    }
+
+    // Fork xpuLoad
+    pid_t pid_load = fork();
+    if (pid_load == 0) {
+        dup2(pipe_load_in2wav[1], STDOUT_FILENO);
+        execlp("xpuLoad", "xpuLoad", file_path.c_str(), nullptr);
+    }
+
+    // 存储管道信息
+    pipelines_[session_id] = {
+        .pid_load = pid_load,
+        .pid_in2wav = pid_in2wav,
+        .pid_process = pid_process,
+        .pid_play = pid_play,
+        .volume = session->volume,
+        .eq_enabled = false
+    };
+#endif
+
+    return true;
+}
+```
+
+#### 控制流程
+
+**暂停播放：**
+```cpp
+void APIServer::pausePipeline(const std::string& session_id) {
+#ifdef _WIN32
+    // Windows: SuspendThread
+#else
+    // Unix/Linux: kill(pid, SIGSTOP)
+    kill(pipeline->pid_play, SIGSTOP);
+#endif
+}
+```
+
+**恢复播放：**
+```cpp
+void APIServer::resumePipeline(const std::string& session_id) {
+#ifdef _WIN32
+    // Windows: ResumeThread
+#else
+    // Unix/Linux: kill(pid, SIGCONT)
+    kill(pipeline->pid_play, SIGCONT);
+#endif
+}
+```
+
+**停止播放：**
+```cpp
+void APIServer::stopPipeline(const std::string& session_id) {
+#ifdef _WIN32
+    // 已实现 v4.1.0: 使用 TerminateProcess
+    HANDLE hProcess;
+    hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pipeline->pid_load);
+    if (hProcess) { TerminateProcess(hProcess, 0); CloseHandle(hProcess); }
+    // ... 同样处理其他进程
+#else
+    // Unix/Linux: kill all processes
+    kill(pipeline->pid_load, SIGTERM);
+    kill(pipeline->pid_in2wav, SIGTERM);
+    kill(pipeline->pid_process, SIGTERM);  // xpuProcess
+    kill(pipeline->pid_play, SIGTERM);
+#endif
+}
+```
+
+#### DSP 功能支持
+
+通过 xpuProcess，API 支持以下 DSP 功能：
+
+| 功能 | API 端点 | xpuProcess 参数 |
+|------|----------|-----------------|
+| 音量控制 | `POST /api/v3/play` options.volume | `--volume=0.8` |
+| 淡入淡出 | 待实现 | `--fade-in=2.0` |
+| 均衡器 | 待实现 | `--eq=bass:0.5,mid:0.3,treble:0.2` |
+
+### 5.5.11 优雅退出机制 (v4.1.0)
+
+xpuApi 在退出时（Ctrl+C 或 SIGTERM）会自动停止所有活动的播放会话：
+
+```cpp
+void APIServer::stop() {
+    // 1. 收集所有活动 session IDs
+    std::vector<std::string> sessions_to_stop;
+    {
+        std::lock_guard<std::mutex> lock(pipelines_mutex_);
+        if (!pipelines_.empty()) {
+            spdlog::info("Stopping {} active playback session(s)...", pipelines_.size());
+        }
+        for (auto& pair : pipelines_) {
+            sessions_to_stop.push_back(pair.first);
+        }
+    }
+
+    // 2. 停止所有 pipeline（释放锁后调用，避免死锁）
+    for (const auto& session_id : sessions_to_stop) {
+        stopPipeline(session_id);
+    }
+
+    // 3. 清理会话和停止 HTTP server
+    // ...
+}
+```
+
+**退出流程：**
+1. 收集活动播放会话
+2. 调用 `stopPipeline()` 终止所有子进程
+3. 清空会话和管道状态
+4. 停止 HTTP 服务器
+5. 等待服务器线程结束
+
+### 5.5.12 Active Session 别名 (v4.1.0)
+
+为简化控制操作，API 支持 `"active"` 作为当前播放会话的别名：
+
+| 端点 | 传统方式 | 使用别名 |
+|------|----------|----------|
+| `POST /api/v3/stop` | `{"session": "uuid-..."}` | `{"session": "active"}` |
+| `POST /api/v3/pause` | `{"session": "uuid-..."}` | `{"session": "active"}` |
+| `POST /api/v3/resume` | `{"session": "uuid-..."}` | `{"session": "active"}` |
+
+**实现：**
+
+```cpp
+SessionState* APIServer::getActiveSession() {
+    // 返回第一个正在播放的会话
+    for (auto& pair : sessions_) {
+        if (pair.second->is_playing && !pair.second->is_paused) {
+            return pair.second.get();
+        }
+    }
+    // 如果没有正在播放的会话，返回最近创建的会话
+    if (!sessions_.empty()) {
+        auto it = sessions_.end(); --it;
+        return it->second.get();
+    }
+    return nullptr;
+}
+```
+
+### 5.5.13 构建和运行
+
+
+**构建：**
+
+```bash
+cd xpu
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . --target xpuApi
+```
+
+**运行：**
+
+```bash
+# 默认配置 (localhost:8080)
+xpuApi
+
+# 自定义端口
+xpuApi --port 9000
+
+# 监听所有接口
+xpuApi --host 0.0.0.0 --port 8080
+
+# 详细模式
+xpuApi --verbose
+```
+
+### 5.5.14 依赖项
+
+| 依赖 | 版本 | 用途 |
+|------|------|------|
+| cpp-httplib | v0.15.3 | HTTP 服务器 |
+| nlohmann/json | 3.11.3 | JSON 解析 |
+| spdlog | 1.12.0 | 日志 |
+
+### 5.5.15 使用示例
+
+**JavaScript 客户端：**
+
+```javascript
+// 1. 开始播放
+const response = await fetch('http://localhost:8080/api/v3/play', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({file: '~/Music/song.flac'})
+});
+const {stream_url, session_id} = await response.json();
+
+// 2. 连接 SSE 流
+const eventSource = new EventSource(`http://localhost:8080${stream_url}`);
+
+eventSource.addEventListener('status', (e) => {
+    const status = JSON.parse(e.data);
+    console.log('State:', status.state, 'Position:', status.position);
+});
+
+// 3. 暂停
+await fetch('http://localhost:8080/api/v3/pause', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({session: session_id})
+});
+```
+
+**cURL 示例：**
+
+```bash
+# 开始播放
+curl -X POST http://localhost:8080/api/v3/play \
+  -H "Content-Type: application/json" \
+  -d '{"file": "~/Music/song.flac"}'
+
+# 获取状态
+curl http://localhost:8080/api/v3/status
+
+# 监听 SSE 流
+curl -N http://localhost:8080/api/stream/audio?session=xxx
+```
+
+---
+
+## 5.6. xpuDaemon MCP Server 实现
+
+> **状态**: ✅ 已实现 (Phase 2)
+> **模块**: `xpu/src/xpuDaemon/MCPServer.{h,cpp}`
+> **协议版本**: MCP 2025-03-26
+> **传输**: stdio JSON-RPC 2.0
+
+### 5.6.1 模块概述
+
+xpuDaemon 集成了 MCP (Model Context Protocol) Server，允许 Claude AI 等 LLM 直接控制 XPU 音频播放。
+
+**核心特性：**
+- stdio 模式的 JSON-RPC 2.0 协议
+- 12 个 MCP Tools 用于播放控制
+- 3 个 MCP Resources 用于状态查询
+- 与 xpuApi 的集成（通过 HTTP 调用）
+
+### 5.6.2 MCP 架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Claude AI (LLM Client)                    │
+└────────────────────────────┬────────────────────────────────┘
+                             │ stdio (stdin/stdout)
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   xpuDaemon (MCP Server)                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐   │
+│  │ JSON-RPC     │  │ MCP Tools    │  │ MCP Resources │   │
+│  │ Handler      │  │ (12 tools)   │  │ (3 resources) │   │
+│  └──────────────┘  └──────────────┘  └────────────────┘   │
+└────────────────────────────┬────────────────────────────────┘
+                             │ HTTP
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      xpuApi (REST API)                       │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  HTTP Client (WinHTTP/cURL - 待实现)               │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 5.6.3 文件结构
+
+```
+xpu/src/xpuDaemon/
+├── MCPServer.h         # MCP Server 头文件
+├── MCPServer.cpp       # MCP Server 实现
+├── xpuDaemon.cpp       # 主入口（添加 --mcp 支持）
+└── ...
+```
+
+### 5.6.4 MCP Server 类
+
+```cpp
+namespace xpu::mcp {
+
+class MCPServer {
+public:
+    MCPServer();
+    ~MCPServer();
+
+    bool start();               // 启动 stdio 模式
+    void stop();
+    bool isRunning() const;
+
+    void setApiBaseUrl(const std::string& url);
+
+private:
+    // JSON-RPC 处理器
+    json handleRequest(const json& request);
+    json handleInitialize(const json& params);
+    json handleListTools();
+    json handleCallTool(const std::string& name, const json& arguments);
+    json handleListResources();
+    json handleReadResource(const std::string& uri);
+
+    // Tool 实现
+    json toolPlay(const json& args);
+    json toolPause(const json& args);
+    json toolResume(const json& args);
+    json toolStop(const json& args);
+    json toolSeek(const json& args);
+    json toolVolume(const json& args);
+    // ... 队列相关 tools
+
+    // Resource 实现
+    json resourceQueue();
+    json resourceStatus();
+    json resourceDevices();
+
+    // HTTP 客户端（调用 xpuApi）
+    json callApi(const std::string& endpoint, const json& data);
+};
+
+}
+```
+
+### 5.6.5 MCP Tools 定义
+
+| Tool 名称 | 功能 | 参数 | 返回值 |
+|----------|------|------|--------|
+| `xpu_play` | 播放音乐 | `file`, `volume`, `device` | 播放状态 |
+| `xpu_pause` | 暂停 | - | 成功/失败 |
+| `xpu_resume` | 恢复 | - | 成功/失败 |
+| `xpu_stop` | 停止 | - | 成功/失败 |
+| `xpu_seek` | 跳转 | `position` (秒) | 成功/失败 |
+| `xpu_volume_set` | 设置音量 | `volume` (0-100) | 成功/失败 |
+| `xpu_queue_add` | 添加到队列 | `files` (数组) | 添加数量 |
+| `xpu_queue_list` | 列出队列 | - | 队列内容 |
+| `xpu_queue_clear` | 清空队列 | - | 成功/失败 |
+| `xpu_queue_next` | 下一首 | - | 成功/失败 |
+| `xpu_get_status` | 获取状态 | - | 状态信息 |
+| `xpu_list_devices` | 列出设备 | - | 设备列表 |
+
+### 5.6.6 MCP Resources 定义
+
+| Resource URI | 名称 | 描述 | MIME Type |
+|---------------|------|------|-----------|
+| `xpu://queue` | 播放队列 | 当前播放队列状态 | application/json |
+| `xpu://status` | 播放状态 | 当前播放状态信息 | application/json |
+| `xpu://devices` | 音频设备 | 可用音频设备列表 | application/json |
+
+### 5.6.7 JSON-RPC 请求/响应格式
+
+**初始化请求：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-03-26",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "claude-code",
+      "version": "1.0.0"
+    }
+  }
+}
+```
+
+**初始化响应：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2025-03-26",
+    "serverInfo": {
+      "name": "xpu",
+      "version": "3.0.0"
+    },
+    "capabilities": {
+      "tools": {},
+      "resources": {}
+    }
+  }
+}
+```
+
+**Tool 调用请求：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "xpu_play",
+    "arguments": {
+      "file": "~/Music/song.flac",
+      "volume": 0.8
+    }
+  }
+}
+```
+
+**Tool 调用响应：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Playback started for: ~/Music/song.flac\nSession ID: 550e8400-..."
+      }
+    ]
+  }
+}
+```
+
+### 5.6.8 启动 MCP 模式
+
+**命令行选项：**
+
+```bash
+# 启动 MCP 服务器
+xpuDaemon --mcp
+
+# 或使用长选项
+xpuDaemon --mcp-mode
+
+# 设置 API URL
+XPU_API_URL=http://localhost:8080 xpuDaemon --mcp
+```
+
+### 5.6.9 Claude Code 配置
+
+在 Claude Code 的 MCP 配置文件中添加：
+
+```json
+{
+  "mcpServers": {
+    "xpu": {
+      "command": "xpuDaemon",
+      "args": ["--mcp"],
+      "env": {
+        "XPU_API_URL": "http://localhost:8080"
+      }
+    }
+  }
+}
+```
+
+### 5.6.10 与 xpuApi 集成
+
+MCP Server 通过 HTTP 调用 xpuApi 的端点：
+
+```cpp
+json MCPServer::toolPlay(const json& args) {
+    std::string file = args["file"];
+    json request;
+    request["file"] = file;
+
+    // 调用 xpuApi
+    json api_response = callApi("/api/v3/play", request);
+
+    // 转换为 MCP 响应格式
+    json result;
+    if (api_response["success"]) {
+        result["content"] = {{
+            {"type", "text"},
+            {"text", "Playback started: " + file}
+        }};
+    } else {
+        result["content"] = {{
+            {"type", "text"},
+            {"text", "Failed: " + api_response["error"]["message"].get<std::string>()}
+        }};
+        result["isError"] = true;
+    }
+
+    return result;
+}
+```
+
+### 5.6.11 HTTP 客户端实现
+
+**当前状态：** 使用 stub 实现，返回模拟响应
+
+**待实现：**
+
+- Windows: WinHTTP API
+- Unix/Linux: libcurl
+
+**示例实现框架：**
+
+```cpp
+// Windows: WinHTTP
+HINTERNET hSession = WinHttpOpen(...);
+HINTERNET hConnect = WinHttpConnect(hSession, ...);
+HINTERNET hRequest = WinHttpOpenRequest(hConnect, ...);
+WinHttpSendRequest(hRequest, ...);
+WinHttpReceiveResponse(hRequest, ...);
+
+// Linux: libcurl
+CURL* curl = curl_easy_init();
+curl_easy_setopt(curl, CURLOPT_URL, url);
+curl_easy_setopt(curl, CURLOPT_POST, 1L);
+curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data.c_str());
+curl_easy_perform(curl);
+curl_easy_cleanup(curl);
+```
+
+### 5.6.12 使用示例
+
+**Claude AI 交互示例：**
+
+```
+用户: 播放我的音乐文件夹中的摇滚音乐
+
+Claude: 我来帮你播放摇滚音乐。让我先查看你的音乐文件夹...
+[调用 xpu_list_devices]
+[调用 xpu_queue_add]
+[调用 xpu_play]
+
+已开始播放摇滚音乐队列！
+```
+
+**直接 JSON-RPC 调用示例：**
+
+```bash
+# 启动 MCP 服务器
+xpuDaemon --mcp
+
+# 在另一个终端发送请求
+echo '{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "xpu_play",
+    "arguments": {"file": "~/Music/song.flac"}
+  }
+}' | xpuDaemon --mcp
+```
+
+### 5.6.13 错误处理
+
+**MCP 错误响应格式：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32603,
+    "message": "Internal error",
+    "data": "File not found"
+  }
+}
+```
+
+**错误码：**
+
+| 错误码 | 含义 |
+|--------|------|
+| -32700 | Parse error (JSON 解析错误) |
+| -32600 | Invalid Request (无效请求) |
+| -32601 | Method not found (方法不存在) |
+| -32602 | Invalid params (无效参数) |
+| -32603 | Internal error (内部错误) |
+
+---
+
 ## 6. REST API 设计
 
 ### 6.1 OpenAPI 规范

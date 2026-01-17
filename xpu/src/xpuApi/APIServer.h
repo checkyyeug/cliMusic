@@ -16,6 +16,7 @@
 #include <mutex>
 #include <atomic>
 #include <unordered_map>
+#include <condition_variable>
 
 #ifdef _WIN32
 #include <process.h>
@@ -27,6 +28,11 @@ typedef int pid_t;
 #include "nlohmann/json.hpp"
 
 using json = nlohmann::json;
+
+// Forward declaration for cpp-httplib Server
+namespace httplib {
+    class Server;
+}
 
 namespace xpu {
 namespace api {
@@ -135,6 +141,7 @@ private:
     // Session management
     std::string createSession();
     SessionState* getSession(const std::string& session_id);
+    SessionState* getActiveSession();  // Get first playing session
     void removeSession(const std::string& session_id);
 
     // Utility functions
@@ -147,6 +154,11 @@ private:
     int port_;
     std::atomic<bool> running_;
     std::thread server_thread_;
+    std::condition_variable stop_cv_;
+
+    // HTTP server (using pointer for pimpl pattern)
+    std::unique_ptr<httplib::Server> http_server_;
+    std::mutex http_server_mutex_;
 
     // Session management
     std::unordered_map<std::string, std::unique_ptr<SessionState>> sessions_;
@@ -154,10 +166,18 @@ private:
 
     // Pipeline process management
     struct PipelineProcess {
-        pid_t pid_load;
-        pid_t pid_in2wav;
-        pid_t pid_play;
+        pid_t pid_load;       // xpuLoad process
+        pid_t pid_in2wav;     // xpuIn2Wav process
+        pid_t pid_process;    // xpuProcess process (DSP)
+        pid_t pid_play;       // xpuPlay process
         std::thread read_thread;
+
+        // DSP parameters
+        float volume;
+        bool eq_enabled;
+        float eq_bass;
+        float eq_mid;
+        float eq_treble;
     };
     std::unordered_map<std::string, std::unique_ptr<PipelineProcess>> pipelines_;
     std::mutex pipelines_mutex_;
